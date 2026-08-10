@@ -30,7 +30,12 @@ export ledger poolAdmin: Bytes<32>;
 // Private user state (witness-managed)
 // ---------------------------------------------------------------------------
 // Shape (TypeScript side, enforced by mock/test implementations):
-//   { userSupplied: Uint<128>, userBorrowed: Uint<128>, userLastIndex: Uint<128> }
+//   {
+//     userSupplied: Uint<128>,
+//     userBorrowed: Uint<128>,
+//     userLastSupplyIndex: Uint<128>,
+//     userLastBorrowIndex: Uint<128>
+//   }
 //
 // Each witness receives the full private-state object via the runtime's
 // witness context and must return [nextPrivateState, valueForCircuit].
@@ -39,115 +44,11 @@ witness userSupplied(): Uint<128>;
 
 witness userBorrowed(): Uint<128>;
 
-witness userLastIndex(): Uint<128>;
+witness userLastSupplyIndex(): Uint<128>;
 
-witness setUserPosition(newSupplied: Uint<128>, newBorrowed: Uint<128>, newLastIndex: Uint<128>): [];
+witness userLastBorrowIndex(): Uint<128>;
 
-// TODO(step 7): add accrue_interest circuit and wire it into deposit/withdraw/borrow
-// so that interest earned between userLastIndex and the current supplyIndex/borrowIndex
-// is included in the updated balances.
-
-constructor() {
-  totalSupplied = 0;
-  totalBorrowed = 0;
-  supplyIndex = 1;
-  borrowIndex = 1;
-  lastAccrualTimestamp = 0;
-  reserveParams =
-    ReserveParams { collateralFactor: 7500,
-                    baseRate: 0,
-                    slope1: 4000,
-                    slope2: 50000,
-                    kink: 8000,
-                    reserveFactor: 7500,
-                    liquidationThreshold: 8000, };
-  poolAdmin = pad(32, "");
-}
-
-export circuit deposit(amount: Uint<128>): [] {
-  assert(amount > 0, "deposit amount must be greater than zero");
-
-  const currentSupplied: Uint<128> = userSupplied();
-  const currentBorrowed: Uint<128> = userBorrowed();
-  const currentIndex: Uint<128> = supplyIndex;
-
-  const newSupplied: Uint<128> = (currentSupplied + amount) as Uint<128>;
-
-  setUserPosition(newSupplied, currentBorrowed, currentIndex);
-
-  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
-  assert(totalSupplied <= MAX_UINT128 - amount, "totalSupplied overflow");
-  totalSupplied = disclose((totalSupplied + amount) as Uint<128>);
-}
-
-// TODO(step 5): add health-factor / collateral check here once borrow and
-// health.compact exist. Reject withdrawal if userBorrowed > 0 and the
-// resulting supplied balance would leave the position undercollateralized.
-
-export circuit withdraw(amount: Uint<128>): [] {
-  assert(amount > 0, "withdrawal amount must be greater than zero");
-
-  const currentSupplied: Uint<128> = userSupplied();
-  const currentBorrowed: Uint<128> = userBorrowed();
-  const currentIndex: Uint<128> = supplyIndex;
-
-  assert(amount <= currentSupplied, "withdrawal amount exceeds user supplied balance");
-  assert(amount <= totalSupplied, "withdrawal amount exceeds total supplied liquidity");
-
-  const newSupplied: Uint<128> = (currentSupplied - amount) as Uint<128>;
-
-  setUserPosition(newSupplied, currentBorrowed, currentIndex);
-
-  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
-  assert(totalSupplied >= amount, "totalSupplied underflow");
-  totalSupplied = disclose((totalSupplied - amount) as Uint<128>);
-}
-
-// TODO(step 7): scale borrow amount by borrowIndex and update borrowIndex after
-// accrue_interest is implemented. The user's debt should be recorded scaled by
-// the current borrowIndex so that interest accrual is automatic.
-// TODO(step 6): replace the basic collateral check below with a proper health-factor
-// check from health.compact once it exists.
-
-export circuit borrow(amount: Uint<128>): [] {
-  assert(amount > 0, "borrow amount must be greater than zero");
-
-  const currentSupplied: Uint<128> = userSupplied();
-  const currentBorrowed: Uint<128> = userBorrowed();
-  const currentIndex: Uint<128> = borrowIndex;
-
-  assert(currentSupplied > 0, "no collateral supplied");
-
-  const newBorrowed: Uint<128> = (currentBorrowed + amount) as Uint<128>;
-
-  setUserPosition(currentSupplied, newBorrowed, currentIndex);
-
-  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
-  assert(totalBorrowed <= MAX_UINT128 - amount, "totalBorrowed overflow");
-  totalBorrowed = disclose((totalBorrowed + amount) as Uint<128>);
-}
-
-// TODO(step 7): accrue interest before repay so the outstanding debt includes
-// accrued interest up to the current timestamp.
-
-export circuit repay(amount: Uint<128>): [] {
-  assert(amount > 0, "repayment amount must be greater than zero");
-
-  const currentSupplied: Uint<128> = userSupplied();
-  const currentBorrowed: Uint<128> = userBorrowed();
-  const currentIndex: Uint<128> = borrowIndex;
-
-  assert(amount <= currentBorrowed, "repayment amount exceeds user borrowed balance");
-  assert(amount <= totalBorrowed, "repayment amount exceeds total borrowed");
-
-  const newBorrowed: Uint<128> = (currentBorrowed - amount) as Uint<128>;
-
-  setUserPosition(currentSupplied, newBorrowed, currentIndex);
-
-  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
-  assert(totalBorrowed >= amount, "totalBorrowed underflow");
-  totalBorrowed = disclose((totalBorrowed - amount) as Uint<128>);
-}
+witness setUserPosition(newSupplied: Uint<128>, newBorrowed: Uint<128>, newLastSupplyIndex: Uint<128>, newLastBorrowIndex: Uint<128>): [];
 
 // ---------------------------------------------------------------------------
 // Interest math helpers (witness-and-verify pattern)
@@ -220,6 +121,22 @@ export pure circuit compute_supply_rate(borrowRate: Uint<128>, utilization: Uint
     return quotient;
 }
 
+// Rescale a normalized balance from lastIndex to currentIndex using
+// witness-and-verify division.  If lastIndex is 0 or equals currentIndex,
+// the stored balance is returned unchanged (no rescaling needed).
+
+export pure circuit rescale_balance(stored: Uint<128>, currentIndex: Uint<128>, lastIndex: Uint<128>, quotient: Uint<128>, remainder: Uint<128>): Uint<128> {
+    if (lastIndex == 0 || lastIndex == currentIndex) {
+        return stored;
+    }
+    const storedField: Field = stored as Field;
+    const currentIndexField: Field = currentIndex as Field;
+    const product: Field = storedField * currentIndexField;
+    const product128: Uint<128> = product as Uint<128>;
+    assert(verify_division(product128, lastIndex, quotient, remainder), "rescale division check failed");
+    return quotient;
+}
+
 // ---------------------------------------------------------------------------
 // accrue_interest
 // ---------------------------------------------------------------------------
@@ -278,4 +195,114 @@ export circuit accrue_interest(
   supplyIndex = disclose(newSupplyIndex);
   borrowIndex = disclose(newBorrowIndex);
   lastAccrualTimestamp = disclose((lastAccrualTimestamp + timeDelta) as Uint<64>);
+}
+
+// ---------------------------------------------------------------------------
+// deposit
+// ---------------------------------------------------------------------------
+// Interest must be accrued externally via accrue_interest() before calling
+// this circuit.  The user's stored userSupplied is a normalized balance
+// recorded against userLastSupplyIndex.  If the indices differ, the stored
+// balance is rescaled to the current supplyIndex using witness-and-verify
+// division (caller supplies quotient and remainder).
+
+export circuit deposit(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  assert(amount > 0, "deposit amount must be greater than zero");
+
+  const currentSupplyIndex: Uint<128> = supplyIndex;
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const lastSupplyIndex: Uint<128> = userLastSupplyIndex();
+
+  const effectiveSupplied: Uint<128> = rescale_balance(currentSupplied, currentSupplyIndex, lastSupplyIndex, rescaleQuotient, rescaleRemainder);
+  const newSupplied: Uint<128> = (effectiveSupplied + amount) as Uint<128>;
+
+  setUserPosition(newSupplied, currentBorrowed, currentSupplyIndex, userLastBorrowIndex());
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalSupplied <= MAX_UINT128 - amount, "totalSupplied overflow");
+  totalSupplied = disclose((totalSupplied + amount) as Uint<128>);
+}
+
+// ---------------------------------------------------------------------------
+// withdraw
+// ---------------------------------------------------------------------------
+// Interest must be accrued externally via accrue_interest() before calling
+// this circuit.  The user's stored userSupplied is rescaled to the current
+// supplyIndex before subtracting the withdrawal amount.
+
+export circuit withdraw(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  assert(amount > 0, "withdrawal amount must be greater than zero");
+
+  const currentSupplyIndex: Uint<128> = supplyIndex;
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const lastSupplyIndex: Uint<128> = userLastSupplyIndex();
+
+  assert(amount <= currentSupplied, "withdrawal amount exceeds user supplied balance");
+  assert(amount <= totalSupplied, "withdrawal amount exceeds total supplied liquidity");
+
+  const effectiveSupplied: Uint<128> = rescale_balance(currentSupplied, currentSupplyIndex, lastSupplyIndex, rescaleQuotient, rescaleRemainder);
+  const newSupplied: Uint<128> = (effectiveSupplied - amount) as Uint<128>;
+
+  setUserPosition(newSupplied, currentBorrowed, currentSupplyIndex, userLastBorrowIndex());
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalSupplied >= amount, "totalSupplied underflow");
+  totalSupplied = disclose((totalSupplied - amount) as Uint<128>);
+}
+
+// ---------------------------------------------------------------------------
+// borrow
+// ---------------------------------------------------------------------------
+// Interest must be accrued externally via accrue_interest() before calling
+// this circuit.  The user's stored userBorrowed is rescaled to the current
+// borrowIndex before adding the new borrow amount.
+
+export circuit borrow(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  assert(amount > 0, "borrow amount must be greater than zero");
+
+  const currentBorrowIndex: Uint<128> = borrowIndex;
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const lastBorrowIndex: Uint<128> = userLastBorrowIndex();
+
+  assert(currentSupplied > 0, "no collateral supplied");
+
+  const effectiveBorrowed: Uint<128> = rescale_balance(currentBorrowed, currentBorrowIndex, lastBorrowIndex, rescaleQuotient, rescaleRemainder);
+  const newBorrowed: Uint<128> = (effectiveBorrowed + amount) as Uint<128>;
+
+  setUserPosition(currentSupplied, newBorrowed, userLastSupplyIndex(), currentBorrowIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalBorrowed <= MAX_UINT128 - amount, "totalBorrowed overflow");
+  totalBorrowed = disclose((totalBorrowed + amount) as Uint<128>);
+}
+
+// ---------------------------------------------------------------------------
+// repay
+// ---------------------------------------------------------------------------
+// Interest must be accrued externally via accrue_interest() before calling
+// this circuit.  The user's stored userBorrowed is rescaled to the current
+// borrowIndex before subtracting the repayment amount.
+
+export circuit repay(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  assert(amount > 0, "repayment amount must be greater than zero");
+
+  const currentBorrowIndex: Uint<128> = borrowIndex;
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const lastBorrowIndex: Uint<128> = userLastBorrowIndex();
+
+  assert(amount <= currentBorrowed, "repayment amount exceeds user borrowed balance");
+  assert(amount <= totalBorrowed, "repayment amount exceeds total borrowed");
+
+  const effectiveBorrowed: Uint<128> = rescale_balance(currentBorrowed, currentBorrowIndex, lastBorrowIndex, rescaleQuotient, rescaleRemainder);
+  const newBorrowed: Uint<128> = (effectiveBorrowed - amount) as Uint<128>;
+
+  setUserPosition(currentSupplied, newBorrowed, userLastSupplyIndex(), currentBorrowIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalBorrowed >= amount, "totalBorrowed underflow");
+  totalBorrowed = disclose((totalBorrowed - amount) as Uint<128>);
 }
