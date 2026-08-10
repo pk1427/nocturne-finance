@@ -70,7 +70,8 @@ const compiledContract = CompiledContract.make('nocturne-lending', NocturneLendi
 const dummyWitnesses = {
   userSupplied: () => [null, 0n],
   userBorrowed: () => [null, 0n],
-  userLastIndex: () => [null, 0n],
+  userLastSupplyIndex: () => [null, 1n],
+  userLastBorrowIndex: () => [null, 1n],
   setUserPosition: () => [null, []],
 };
 
