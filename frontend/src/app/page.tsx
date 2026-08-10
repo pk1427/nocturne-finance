@@ -25,7 +25,7 @@ export default function Home() {
           </a>
         </div>
         <p className="text-sm text-gray-500">
-          Connect your Lace wallet to get started.
+          Uses a server-side wallet. Click below to load your dashboard.
         </p>
       </div>
     </main>

@@ -21,6 +21,8 @@ type LaceConnectedAPI = {
   getUnshieldedAddress: () => Promise<{ unshieldedAddress: string }>;
   balanceUnsealedTransaction?: (tx: string) => Promise<{ tx: string }>;
   submitTransaction: (tx: string) => Promise<string>;
+  getCoinPublicKey?: () => string;
+  getEncryptionPublicKey?: () => string;
 };
 
 declare global {
@@ -36,6 +38,8 @@ const WalletContext = createContext<{
   signAndSubmit: (tx: unknown) => Promise<string>;
   isCorrectNetwork: boolean;
 } | null>(null);
+
+const WALLET_NETWORK = process.env.NEXT_PUBLIC_NETWORK || "undeployed";
 
 const EXPECTED_NETWORKS = new Set(["preview", "preprod", "undeployed", "mainnet", "qanet"]);
 
@@ -69,7 +73,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const connected = await walletApi.connect("undeployed");
+      let enabledApi = walletApi;
+      if (typeof walletApi.enable === "function") {
+        enabledApi = await walletApi.enable();
+      } else if (typeof (window.midnight as any)?.enable === "function") {
+        enabledApi = await (window.midnight as any).enable();
+      }
+
+      const connected = await enabledApi.connect(WALLET_NETWORK);
       const config = await connected.getConfiguration();
       const addresses = await connected.getShieldedAddresses();
 
@@ -81,10 +92,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         error: EXPECTED_NETWORKS.has(config.networkId) ? null : "Please switch to a supported Midnight network",
       });
     } catch (err) {
-      setState((s) => ({
-        ...s,
-        error: err instanceof Error ? err.message : "Connection failed",
-      }));
+      const message = err instanceof Error ? err.message : "Connection failed";
+      if (message.includes("Unauthorized request origin")) {
+        setState((s) => ({ ...s, error: "Please authorize this site in the Lace Midnight wallet, then try again." }));
+      } else {
+        setState((s) => ({ ...s, error: message }));
+      }
     }
   }, []);
 
@@ -116,7 +129,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const walletApi = findWalletAPI();
       if (!walletApi) return;
       try {
-        const connected = await walletApi.connect("undeployed");
+        if (typeof walletApi.enable === "function") {
+          await walletApi.enable();
+        }
+        const connected = await walletApi.connect(WALLET_NETWORK);
         const config = await connected.getConfiguration();
         const addresses = await connected.getShieldedAddresses();
         setApi(connected);
