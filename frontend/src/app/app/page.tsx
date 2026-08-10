@@ -1,68 +1,68 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useLaceWallet } from "@/hooks/useLaceWallet";
 
 export default function AppPage() {
-  const [connected, setConnected] = useState(false);
-  const [address, setAddress] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Placeholder for Lace wallet integration
-    // Check if Lace wallet is available and connected
-    const checkWallet = async () => {
-      if (typeof window !== "undefined" && (window as any).lace) {
-        try {
-          const api = await (window as any).lace.enable();
-          const addr = await api.getAddress();
-          setAddress(addr);
-          setConnected(true);
-        } catch {
-          // Not connected
-        }
-      }
-    };
-    checkWallet();
-  }, []);
-
-  const connectWallet = async () => {
-    if (typeof window !== "undefined" && (window as any).lace) {
-      try {
-        const api = await (window as any).lace.enable();
-        const addr = await api.getAddress();
-        setAddress(addr);
-        setConnected(true);
-      } catch (err) {
-        console.error("Failed to connect Lace wallet:", err);
-      }
-    } else {
-      alert("Lace wallet not detected. Please install it to continue.");
-    }
-  };
+  const { isConnected, address, connect, error, isCorrectNetwork } = useLaceWallet();
 
   return (
-    <main className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center px-6">
-      <div className="max-w-xl w-full space-y-6 text-center">
-        <h1 className="text-3xl font-bold">Nocturne Finance</h1>
-        <p className="text-gray-400">
-          Supply, borrow, and earn interest with privacy on Midnight.
-        </p>
-
-        {connected ? (
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-2">
-            <p className="text-green-400 font-mono text-sm break-all">
-              {address}
+    <main className="min-h-screen bg-gray-950 text-white">
+      <div className="max-w-6xl mx-auto px-4 py-12">
+        {!isConnected ? (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6">
+            <h1 className="text-4xl font-bold">Nocturne Finance</h1>
+            <p className="text-gray-400 text-lg max-w-md text-center">
+              Privacy-preserving lending & borrowing on Midnight. Connect your
+              Lace wallet to get started.
             </p>
-            <p className="text-gray-500 text-sm">
-              Wallet connected. Contract integration coming soon.
-            </p>
+            <button
+              onClick={connect}
+              className="rounded-lg bg-indigo-600 px-8 py-3 font-semibold hover:bg-indigo-500 transition"
+            >
+              Connect Lace Wallet
+            </button>
+            {error && <p className="text-red-400 text-sm">{error}</p>}
           </div>
         ) : (
-          <button
-            onClick={connectWallet}
-            className="rounded-lg bg-indigo-600 px-6 py-3 font-semibold hover:bg-indigo-500 transition"
-          >
-            Connect Lace Wallet
-          </button>
+          <div className="space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">Dashboard</h2>
+                <p className="text-gray-400 text-sm font-mono">
+                  {address}
+                </p>
+              </div>
+              {!isCorrectNetwork && (
+                <div className="rounded-lg border border-red-800 bg-red-900/20 px-4 py-2">
+                  <p className="text-red-400 text-sm">
+                    Please switch to the preview network in Lace wallet
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="rounded-lg border border-gray-800 bg-gray-900 p-6">
+                <p className="text-gray-400 text-sm">Total Supplied</p>
+                <p className="text-2xl font-bold mt-2">0.00</p>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-900 p-6">
+                <p className="text-gray-400 text-sm">Total Borrowed</p>
+                <p className="text-2xl font-bold mt-2">0.00</p>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-900 p-6">
+                <p className="text-gray-400 text-sm">Net APY</p>
+                <p className="text-2xl font-bold mt-2">0.00%</p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-800 bg-gray-900 p-6">
+              <p className="text-gray-400 text-sm mb-4">
+                Contract integration pending. Deploy the contract on preview and
+                set NEXT_PUBLIC_CONTRACT_ADDRESS.
+              </p>
+            </div>
+          </div>
         )}
       </div>
     </main>
