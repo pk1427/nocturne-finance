@@ -1,0 +1,281 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+struct ReserveParams {
+  collateralFactor: Uint<128>,
+  baseRate: Uint<128>,
+  slope1: Uint<128>,
+  slope2: Uint<128>,
+  kink: Uint<128>,
+  reserveFactor: Uint<128>,
+  liquidationThreshold: Uint<128>,
+}
+
+export ledger totalSupplied: Uint<128>;
+
+export ledger totalBorrowed: Uint<128>;
+
+export ledger supplyIndex: Uint<128>;
+
+export ledger borrowIndex: Uint<128>;
+
+export ledger lastAccrualTimestamp: Uint<64>;
+
+export ledger reserveParams: ReserveParams;
+
+export ledger poolAdmin: Bytes<32>;
+
+// ---------------------------------------------------------------------------
+// Private user state (witness-managed)
+// ---------------------------------------------------------------------------
+// Shape (TypeScript side, enforced by mock/test implementations):
+//   { userSupplied: Uint<128>, userBorrowed: Uint<128>, userLastIndex: Uint<128> }
+//
+// Each witness receives the full private-state object via the runtime's
+// witness context and must return [nextPrivateState, valueForCircuit].
+
+witness userSupplied(): Uint<128>;
+
+witness userBorrowed(): Uint<128>;
+
+witness userLastIndex(): Uint<128>;
+
+witness setUserPosition(newSupplied: Uint<128>, newBorrowed: Uint<128>, newLastIndex: Uint<128>): [];
+
+// TODO(step 7): add accrue_interest circuit and wire it into deposit/withdraw/borrow
+// so that interest earned between userLastIndex and the current supplyIndex/borrowIndex
+// is included in the updated balances.
+
+constructor() {
+  totalSupplied = 0;
+  totalBorrowed = 0;
+  supplyIndex = 1;
+  borrowIndex = 1;
+  lastAccrualTimestamp = 0;
+  reserveParams =
+    ReserveParams { collateralFactor: 7500,
+                    baseRate: 0,
+                    slope1: 4000,
+                    slope2: 50000,
+                    kink: 8000,
+                    reserveFactor: 7500,
+                    liquidationThreshold: 8000, };
+  poolAdmin = pad(32, "");
+}
+
+export circuit deposit(amount: Uint<128>): [] {
+  assert(amount > 0, "deposit amount must be greater than zero");
+
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const currentIndex: Uint<128> = supplyIndex;
+
+  const newSupplied: Uint<128> = (currentSupplied + amount) as Uint<128>;
+
+  setUserPosition(newSupplied, currentBorrowed, currentIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalSupplied <= MAX_UINT128 - amount, "totalSupplied overflow");
+  totalSupplied = disclose((totalSupplied + amount) as Uint<128>);
+}
+
+// TODO(step 5): add health-factor / collateral check here once borrow and
+// health.compact exist. Reject withdrawal if userBorrowed > 0 and the
+// resulting supplied balance would leave the position undercollateralized.
+
+export circuit withdraw(amount: Uint<128>): [] {
+  assert(amount > 0, "withdrawal amount must be greater than zero");
+
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const currentIndex: Uint<128> = supplyIndex;
+
+  assert(amount <= currentSupplied, "withdrawal amount exceeds user supplied balance");
+  assert(amount <= totalSupplied, "withdrawal amount exceeds total supplied liquidity");
+
+  const newSupplied: Uint<128> = (currentSupplied - amount) as Uint<128>;
+
+  setUserPosition(newSupplied, currentBorrowed, currentIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalSupplied >= amount, "totalSupplied underflow");
+  totalSupplied = disclose((totalSupplied - amount) as Uint<128>);
+}
+
+// TODO(step 7): scale borrow amount by borrowIndex and update borrowIndex after
+// accrue_interest is implemented. The user's debt should be recorded scaled by
+// the current borrowIndex so that interest accrual is automatic.
+// TODO(step 6): replace the basic collateral check below with a proper health-factor
+// check from health.compact once it exists.
+
+export circuit borrow(amount: Uint<128>): [] {
+  assert(amount > 0, "borrow amount must be greater than zero");
+
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const currentIndex: Uint<128> = borrowIndex;
+
+  assert(currentSupplied > 0, "no collateral supplied");
+
+  const newBorrowed: Uint<128> = (currentBorrowed + amount) as Uint<128>;
+
+  setUserPosition(currentSupplied, newBorrowed, currentIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalBorrowed <= MAX_UINT128 - amount, "totalBorrowed overflow");
+  totalBorrowed = disclose((totalBorrowed + amount) as Uint<128>);
+}
+
+// TODO(step 7): accrue interest before repay so the outstanding debt includes
+// accrued interest up to the current timestamp.
+
+export circuit repay(amount: Uint<128>): [] {
+  assert(amount > 0, "repayment amount must be greater than zero");
+
+  const currentSupplied: Uint<128> = userSupplied();
+  const currentBorrowed: Uint<128> = userBorrowed();
+  const currentIndex: Uint<128> = borrowIndex;
+
+  assert(amount <= currentBorrowed, "repayment amount exceeds user borrowed balance");
+  assert(amount <= totalBorrowed, "repayment amount exceeds total borrowed");
+
+  const newBorrowed: Uint<128> = (currentBorrowed - amount) as Uint<128>;
+
+  setUserPosition(currentSupplied, newBorrowed, currentIndex);
+
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  assert(totalBorrowed >= amount, "totalBorrowed underflow");
+  totalBorrowed = disclose((totalBorrowed - amount) as Uint<128>);
+}
+
+// ---------------------------------------------------------------------------
+// Interest math helpers (witness-and-verify pattern)
+// ---------------------------------------------------------------------------
+// These are local copies of the circuits in interest_math.compact so that
+// accrue_interest does not depend on a cross-module import.  When the
+// compiler supports module resolution, replace these with imports from
+// interest_math.compact.
+
+export pure circuit verify_division(numerator: Uint<128>, denominator: Uint<128>, quotient: Uint<128>, remainder: Uint<128>): Boolean {
+    assert(denominator > 0, "denominator must be non-zero");
+    const num: Field = numerator as Field;
+    const den: Field = denominator as Field;
+    const quo: Field = quotient as Field;
+    const rem: Field = remainder as Field;
+    assert(quo * den + rem == num, "division check failed");
+    assert(remainder < denominator, "remainder out of range");
+    return true;
+}
+
+export pure circuit compute_utilization(totalBorrowed: Uint<128>, totalSupplied: Uint<128>, utilizationQuotient: Uint<128>, utilizationRemainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    if (totalSupplied == 0) {
+        return 0;
+    }
+    const numerator: Uint<248> = totalBorrowed * 10000;
+    assert(numerator <= MAX_UINT128 as Uint<248>, "totalBorrowed * SCALE overflow");
+    const numerator128: Uint<128> = numerator as Uint<128>;
+    assert(verify_division(numerator128, totalSupplied, utilizationQuotient, utilizationRemainder), "utilization division check failed");
+    return utilizationQuotient;
+}
+
+export pure circuit compute_borrow_rate(utilization: Uint<128>, params: ReserveParams, slope1Quotient: Uint<128>, slope1Remainder: Uint<128>, slope2Quotient: Uint<128>, slope2Remainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    const kink: Uint<128> = params.kink;
+    const baseRate: Uint<128> = params.baseRate;
+    const slope1: Uint<128> = params.slope1;
+    const slope2: Uint<128> = params.slope2;
+
+    if (utilization <= kink) {
+        const util16: Uint<16> = utilization as Uint<16>;
+        const numerator: Uint<248> = util16 * slope1;
+        assert(numerator <= MAX_UINT128 as Uint<248>, "slope1 numerator overflow");
+        const numerator128: Uint<128> = numerator as Uint<128>;
+        assert(verify_division(numerator128, kink, slope1Quotient, slope1Remainder), "slope1 division check failed");
+        return (baseRate + slope1Quotient) as Uint<128>;
+    } else {
+        const diff: Uint<128> = utilization - kink;
+        const denominator: Uint<128> = 10000 - kink;
+        const diff16: Uint<16> = diff as Uint<16>;
+        const numerator: Uint<248> = diff16 * slope2;
+        assert(numerator <= MAX_UINT128 as Uint<248>, "slope2 numerator overflow");
+        const numerator128: Uint<128> = numerator as Uint<128>;
+        assert(verify_division(numerator128, denominator, slope2Quotient, slope2Remainder), "slope2 division check failed");
+        const partial: Uint<128> = (baseRate + slope1) as Uint<128>;
+        return (partial + slope2Quotient) as Uint<128>;
+    }
+}
+
+export pure circuit compute_supply_rate(borrowRate: Uint<128>, utilization: Uint<128>, reserveFactor: Uint<128>, quotient: Uint<128>, remainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    const br16: Uint<16> = borrowRate as Uint<16>;
+    const util16: Uint<16> = utilization as Uint<16>;
+    const term: Uint<128> = 10000 - reserveFactor;
+    const term16: Uint<16> = term as Uint<16>;
+    const numerator: Uint<248> = br16 * util16 * term16;
+    assert(numerator <= MAX_UINT128 as Uint<248>, "supply rate numerator overflow");
+    const numerator128: Uint<128> = numerator as Uint<128>;
+    assert(verify_division(numerator128, 10000 * 10000, quotient, remainder), "supply rate division check failed");
+    return quotient;
+}
+
+// ---------------------------------------------------------------------------
+// accrue_interest
+// ---------------------------------------------------------------------------
+// Recompute cumulative supply/borrow indices from lastAccrualTimestamp to
+// currentTimestamp.  Idempotent: if currentTimestamp == lastAccrualTimestamp
+// the circuit returns immediately with no state change.
+//
+// Every division in this circuit is proven, not performed, using the
+// witness-and-verify pattern.  The caller precomputes the quotients off-chain
+// and supplies them as untrusted parameters; the circuit verifies each
+// division is exact.
+
+export circuit accrue_interest(
+  timeDelta: Uint<64>,
+  utilizationQuotient: Uint<128>, utilizationRemainder: Uint<128>,
+  slope1Quotient: Uint<128>, slope1Remainder: Uint<128>,
+  slope2Quotient: Uint<128>, slope2Remainder: Uint<128>,
+  supplyRateQuotient: Uint<128>, supplyRateRemainder: Uint<128>,
+  borrowIndexIncrementQuotient: Uint<128>, borrowIndexIncrementRemainder: Uint<128>,
+  supplyIndexIncrementQuotient: Uint<128>, supplyIndexIncrementRemainder: Uint<128>
+): [] {
+  const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+  const SECONDS_PER_YEAR: Uint<128> = 31536000;
+  const INDEX_SCALE: Uint<128> = (10000 * SECONDS_PER_YEAR) as Uint<128>;
+
+  const currentSupplyIndex: Uint<128> = supplyIndex;
+  const currentBorrowIndex: Uint<128> = borrowIndex;
+  const currentTotalSupplied: Uint<128> = totalSupplied;
+  const currentTotalBorrowed: Uint<128> = totalBorrowed;
+  const params: ReserveParams = reserveParams;
+
+  const utilization: Uint<128> = compute_utilization(currentTotalBorrowed, currentTotalSupplied, utilizationQuotient, utilizationRemainder);
+  const borrowRate: Uint<128> = compute_borrow_rate(utilization, params, slope1Quotient, slope1Remainder, slope2Quotient, slope2Remainder);
+  const supplyRate: Uint<128> = compute_supply_rate(borrowRate, utilization, params.reserveFactor, supplyRateQuotient, supplyRateRemainder);
+
+  // ---- borrow index update ----
+  const bi: Field = currentBorrowIndex as Field;
+  const br: Field = borrowRate as Field;
+  const td: Field = timeDelta as Field;
+  const borrowProduct: Field = bi * br * td;
+  const borrowProduct128: Uint<128> = borrowProduct as Uint<128>;
+  assert(verify_division(borrowProduct128, INDEX_SCALE, borrowIndexIncrementQuotient, borrowIndexIncrementRemainder), "borrow index accrual check failed");
+  const newBorrowIndex: Uint<128> = (currentBorrowIndex + borrowIndexIncrementQuotient) as Uint<128>;
+  assert(currentBorrowIndex <= MAX_UINT128 - borrowIndexIncrementQuotient, "borrow index overflow");
+
+  // ---- supply index update ----
+  const si: Field = currentSupplyIndex as Field;
+  const sr: Field = supplyRate as Field;
+  const supplyProduct: Field = si * sr * td;
+  const supplyProduct128: Uint<128> = supplyProduct as Uint<128>;
+  assert(verify_division(supplyProduct128, INDEX_SCALE, supplyIndexIncrementQuotient, supplyIndexIncrementRemainder), "supply index accrual check failed");
+  const newSupplyIndex: Uint<128> = (currentSupplyIndex + supplyIndexIncrementQuotient) as Uint<128>;
+  assert(currentSupplyIndex <= MAX_UINT128 - supplyIndexIncrementQuotient, "supply index overflow");
+
+  // ---- write back ----
+  supplyIndex = disclose(newSupplyIndex);
+  borrowIndex = disclose(newBorrowIndex);
+  lastAccrualTimestamp = disclose((lastAccrualTimestamp + timeDelta) as Uint<64>);
+}

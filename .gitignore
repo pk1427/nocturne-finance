@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Build outputs
+contract/managed/
+contract/**/*.zkir
+contract/**/*.json
+contract/**/*.js
+contract/**/*.ts
+
+# Compact artifacts
+contract/src/**/*.zkir
+contract/src/managed/
+contract/tests/managed/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor junk
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+.midnight-state.json
+.midnight-wallet-state/
+midnight-level-db/
+node_modules/
+.env
+.env.local
+*.log

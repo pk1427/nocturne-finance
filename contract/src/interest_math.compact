@@ -1,0 +1,119 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// Fixed-point scale: basis points (1e4), consistent with nocturne_lending.compact.
+// All rates, factors, and utilization values are expressed in this scale.
+
+struct RateParams {
+  baseRate: Uint<128>,
+  slope1: Uint<128>,
+  slope2: Uint<128>,
+  kink: Uint<128>,
+  reserveFactor: Uint<128>,
+}
+
+// ---------------------------------------------------------------------------
+// Division verification helper (witness-and-verify pattern)
+// ---------------------------------------------------------------------------
+// This project has no division operator, so every division is performed
+// off-chain (in TypeScript) and the caller supplies quotient + remainder as
+// untrusted witness inputs.  This circuit proves the division was correct.
+//
+// Why Field internally: Uint<128> * Uint<128> can produce up to 2^256, which
+// exceeds Compact's maximum Uint width (Uint<248>).  Casting the operands to
+// Field lets the ZK backend perform the multiplication in the prime field;
+// the inputs and outputs of this helper are still entirely Uint/Boolean, so
+// callers never see Field values.
+// ---------------------------------------------------------------------------
+
+export pure circuit verify_division(numerator: Uint<128>, denominator: Uint<128>, quotient: Uint<128>, remainder: Uint<128>): Boolean {
+    assert(denominator > 0, "denominator must be non-zero");
+    const num: Field = numerator as Field;
+    const den: Field = denominator as Field;
+    const quo: Field = quotient as Field;
+    const rem: Field = remainder as Field;
+    assert(quo * den + rem == num, "division check failed");
+    assert(remainder < denominator, "remainder out of range");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Utilization
+// ---------------------------------------------------------------------------
+// utilization = totalBorrowed * SCALE / totalSupplied  (basis points)
+//
+// Returns 0 when totalSupplied == 0 (pool is empty).
+// Otherwise verifies totalBorrowed * SCALE = utilizationQuotient * totalSupplied + utilizationRemainder.
+
+export pure circuit compute_utilization(totalBorrowed: Uint<128>, totalSupplied: Uint<128>, utilizationQuotient: Uint<128>, utilizationRemainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    if (totalSupplied == 0) {
+        return 0;
+    }
+    const numerator: Uint<248> = totalBorrowed * 10000;
+    assert(numerator <= MAX_UINT128 as Uint<248>, "totalBorrowed * SCALE overflow");
+    const numerator128: Uint<128> = numerator as Uint<128>;
+    assert(verify_division(numerator128, totalSupplied, utilizationQuotient, utilizationRemainder), "utilization division check failed");
+    return utilizationQuotient;
+}
+
+// ---------------------------------------------------------------------------
+// Borrow rate (two-slope kink model)
+// ---------------------------------------------------------------------------
+// if utilization <= kink:
+//     borrowRate = baseRate + (utilization * slope1) / kink
+// else:
+//     borrowRate = baseRate + slope1 + ((utilization - kink) * slope2) / (SCALE - kink)
+//
+// Each division point is verified with verify_division using caller-supplied
+// quotient/remainder pairs.
+
+export pure circuit compute_borrow_rate(utilization: Uint<128>, params: RateParams, slope1Quotient: Uint<128>, slope1Remainder: Uint<128>, slope2Quotient: Uint<128>, slope2Remainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    const kink: Uint<128> = params.kink;
+    const baseRate: Uint<128> = params.baseRate;
+    const slope1: Uint<128> = params.slope1;
+    const slope2: Uint<128> = params.slope2;
+
+    if (utilization <= kink) {
+        const util16: Uint<16> = utilization as Uint<16>;
+        const numerator: Uint<248> = util16 * slope1;
+        assert(numerator <= MAX_UINT128 as Uint<248>, "slope1 numerator overflow");
+        const numerator128: Uint<128> = numerator as Uint<128>;
+        assert(verify_division(numerator128, kink, slope1Quotient, slope1Remainder), "slope1 division check failed");
+        return (baseRate + slope1Quotient) as Uint<128>;
+    } else {
+        const diff: Uint<128> = utilization - kink;
+        const denominator: Uint<128> = 10000 - kink;
+        const diff16: Uint<16> = diff as Uint<16>;
+        const numerator: Uint<248> = diff16 * slope2;
+        assert(numerator <= MAX_UINT128 as Uint<248>, "slope2 numerator overflow");
+        const numerator128: Uint<128> = numerator as Uint<128>;
+        assert(verify_division(numerator128, denominator, slope2Quotient, slope2Remainder), "slope2 division check failed");
+        const partial: Uint<128> = (baseRate + slope1) as Uint<128>;
+        return (partial + slope2Quotient) as Uint<128>;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Supply rate
+// ---------------------------------------------------------------------------
+// supplyRate = borrowRate * utilization * (SCALE - reserveFactor) / SCALE^2
+//
+// The triple product is narrowed to Uint<16> factors so the intermediate
+// multiplication fits in Uint<248>.  Verified with caller-supplied
+// quotient/remainder.
+
+export pure circuit compute_supply_rate(borrowRate: Uint<128>, utilization: Uint<128>, reserveFactor: Uint<128>, quotient: Uint<128>, remainder: Uint<128>): Uint<128> {
+    const MAX_UINT128: Uint<128> = 340282366920938463463374607431768211455 as Uint<128>;
+    const br16: Uint<16> = borrowRate as Uint<16>;
+    const util16: Uint<16> = utilization as Uint<16>;
+    const term: Uint<128> = 10000 - reserveFactor;
+    const term16: Uint<16> = term as Uint<16>;
+    const numerator: Uint<248> = br16 * util16 * term16;
+    assert(numerator <= MAX_UINT128 as Uint<248>, "supply rate numerator overflow");
+    const numerator128: Uint<128> = numerator as Uint<128>;
+    assert(verify_division(numerator128, 10000 * 10000, quotient, remainder), "supply rate division check failed");
+    return quotient;
+}
