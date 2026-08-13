@@ -13,23 +13,24 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="antialiased bg-gray-950 text-white">
+      <body className="antialiased">
         <Providers>
-          <header className="border-b border-gray-800">
-            <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-              <div className="flex items-center gap-6">
-                <Link href="/" className="text-xl font-bold text-indigo-400">
-                  Nocturne
+          <header className="fixed inset-x-0 top-5 z-40 px-4">
+            <div className="glass-panel mx-auto flex h-16 max-w-6xl items-center justify-between rounded-2xl px-3 sm:px-5">
+              <div className="flex items-center gap-5 sm:gap-9">
+                <Link href="/" className="font-display flex items-center gap-2.5 text-lg font-bold tracking-[0.18em] text-white">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-cyan-300/30 bg-cyan-400/10 text-cyan-200">N</span>
+                  NOCTURNE
                 </Link>
-                <nav className="hidden md:flex gap-4 text-sm">
-                  <Link href="/app" className="text-gray-300 hover:text-white transition">
-                    App
+                <nav className="hidden items-center gap-6 text-[11px] font-medium tracking-[0.14em] text-slate-400 md:flex">
+                  <Link href="/app" className="transition hover:text-cyan-200">
+                    DASHBOARD
                   </Link>
                   <a
                     href="https://github.com/pk1427/nocturne-finance"
                     target="_blank"
                     rel="noreferrer"
-                    className="text-gray-300 hover:text-white transition"
+                    className="transition hover:text-cyan-200"
                   >
                     GitHub
                   </a>
@@ -38,7 +39,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <WalletButton />
             </div>
           </header>
-          {children}
+          <div className="pt-24">{children}</div>
         </Providers>
       </body>
     </html>

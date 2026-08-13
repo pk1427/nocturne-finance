@@ -20,14 +20,14 @@ export function WalletButton() {
 
   if (isConnected) {
     return (
-      <div className="flex items-center gap-3">
-        <div className="flex flex-col items-end">
-          <span className="text-sm font-mono text-indigo-400">{formatAddress(address!)}</span>
-          <span className="text-xs text-gray-500">{isCorrectNetwork ? networkId : "Wrong network"}</span>
+      <div className="flex items-center gap-2">
+        <div className="hidden flex-col items-end sm:flex">
+          <span className="font-mono-ui text-xs text-cyan-200">{formatAddress(address!)}</span>
+          <span className="font-mono-ui text-[10px] uppercase tracking-wider text-slate-500">{isCorrectNetwork ? networkId : "Wrong network"}</span>
         </div>
         <button
           onClick={handleDisconnect}
-          className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm hover:border-gray-500 transition"
+          className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-300/30 hover:text-white"
         >
           Disconnect
         </button>
@@ -39,7 +39,7 @@ export function WalletButton() {
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={handleConnect}
-        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 transition"
+        className="gradient-border rounded-full px-4 py-2 text-xs font-medium text-cyan-100 transition hover:text-white"
       >
         Connect Wallet
       </button>

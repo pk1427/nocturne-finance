@@ -1,1 +1,76 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
+
+:root {
+  --nocturne-bg: #030712;
+  --nocturne-panel: rgba(11, 18, 33, 0.68);
+  --nocturne-border: rgba(148, 163, 184, 0.16);
+  --nocturne-cyan: #22d3ee;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--nocturne-bg); }
+
+body {
+  min-height: 100vh;
+  background: var(--nocturne-bg);
+  color: #f8fafc;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection { background: rgba(34, 211, 238, 0.3); color: white; }
+
+.nocturne-shell {
+  min-height: 100vh;
+  isolation: isolate;
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(to right, rgba(255,255,255,0.026) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.026) 1px, transparent 1px),
+    #030712;
+  background-size: 52px 52px, 52px 52px, auto;
+}
+
+.nocturne-shell::before,
+.nocturne-shell::after {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  width: 36rem;
+  height: 36rem;
+  border-radius: 9999px;
+  filter: blur(130px);
+  pointer-events: none;
+}
+
+.nocturne-shell::before { top: -18rem; left: -14rem; background: rgba(6, 182, 212, 0.18); }
+.nocturne-shell::after { right: -18rem; top: 16rem; background: rgba(99, 102, 241, 0.16); }
+
+.font-display { font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif; }
+.font-mono-ui { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+.glass-panel {
+  border: 1px solid var(--nocturne-border);
+  background: var(--nocturne-panel);
+  box-shadow: 0 16px 48px -24px rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(18px);
+}
+
+.gradient-border {
+  position: relative;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(#0b1221, #0b1221) padding-box,
+    linear-gradient(120deg, rgba(34,211,238,.62), rgba(99,102,241,.5), rgba(255,255,255,.12)) border-box;
+}
+
+.eyebrow {
+  color: #67e8f9;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
