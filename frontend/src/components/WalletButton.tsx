@@ -1,10 +1,9 @@
 "use client";
 
-import { useWallet } from "@/hooks/useWallet";
+import { useLaceWallet } from "@/hooks/useLaceWallet";
 
 export function WalletButton() {
-  const { info, loading, error, refresh } = useWallet();
-  const isConnected = !!info?.address;
+  const { isConnected, address, networkId, error, connect, disconnect, isCorrectNetwork } = useLaceWallet();
 
   const formatAddress = (addr: string) => {
     if (!addr || addr.length <= 12) return addr;
@@ -12,20 +11,19 @@ export function WalletButton() {
   };
 
   const handleConnect = async () => {
-    await refresh();
+    await connect();
   };
 
-  const handleDisconnect = () => {
-    // Server-side wallet cannot truly disconnect from the frontend.
-    // This is a no-op UI-wise; reload the page if you want to reset.
+  const handleDisconnect = async () => {
+    await disconnect();
   };
 
   if (isConnected) {
     return (
       <div className="flex items-center gap-3">
         <div className="flex flex-col items-end">
-          <span className="text-sm font-mono text-indigo-400">{formatAddress(info!.address)}</span>
-          <span className="text-xs text-gray-500">{info!.network}</span>
+          <span className="text-sm font-mono text-indigo-400">{formatAddress(address!)}</span>
+          <span className="text-xs text-gray-500">{isCorrectNetwork ? networkId : "Wrong network"}</span>
         </div>
         <button
           onClick={handleDisconnect}
@@ -41,17 +39,11 @@ export function WalletButton() {
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={handleConnect}
-        disabled={loading}
-        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 transition disabled:opacity-50"
+        className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 transition"
       >
-        {loading ? "Connecting..." : "Connect Wallet"}
+        Connect Wallet
       </button>
       {error && <span className="text-xs text-red-400">{error}</span>}
-      {!error && !isConnected && (
-        <span className="text-xs text-gray-500">
-          Uses server-side wallet
-        </span>
-      )}
     </div>
   );
 }

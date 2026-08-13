@@ -1,5 +1,7 @@
 "use client";
 
+import { WalletProvider } from "@/hooks/useLaceWallet";
+
 export function Providers({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <WalletProvider>{children}</WalletProvider>;
 }

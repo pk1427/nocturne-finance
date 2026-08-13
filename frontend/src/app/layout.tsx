@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import type { ReactNode } from "react";
 import { Providers } from "./providers";
 import { WalletButton } from "@/components/WalletButton";
 import "./globals.css";
@@ -8,7 +10,7 @@ export const metadata: Metadata = {
   description: "Privacy-preserving lending & borrowing on Midnight",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body className="antialiased bg-gray-950 text-white">
@@ -16,13 +18,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <header className="border-b border-gray-800">
             <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
               <div className="flex items-center gap-6">
-                <a href="/" className="text-xl font-bold text-indigo-400">
+                <Link href="/" className="text-xl font-bold text-indigo-400">
                   Nocturne
-                </a>
+                </Link>
                 <nav className="hidden md:flex gap-4 text-sm">
-                  <a href="/app" className="text-gray-300 hover:text-white transition">
+                  <Link href="/app" className="text-gray-300 hover:text-white transition">
                     App
-                  </a>
+                  </Link>
                   <a
                     href="https://github.com/pk1427/nocturne-finance"
                     target="_blank"

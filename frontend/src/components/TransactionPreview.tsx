@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 type TransactionPreviewProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -38,7 +36,7 @@ export function TransactionPreview({
 
         <div className="rounded-lg border border-yellow-800 bg-yellow-900/20 p-3 mb-6">
           <p className="text-yellow-400 text-xs">
-            ⚠️ This is a server-assisted flow. The transaction will be proven server-side and signed with the backend wallet.
+            ⚠️ This is a server-assisted flow. The transaction will be proven server-side and signed in your Lace wallet.
           </p>
         </div>
 

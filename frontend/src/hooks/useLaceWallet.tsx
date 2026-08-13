@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useCallback, useState, createContext, useContext, ReactNode } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
+import type { ConnectedAPI, InitialAPI } from "@midnight-ntwrk/dapp-connector-api";
 
 type WalletState = {
   isConnected: boolean;
@@ -9,169 +10,130 @@ type WalletState = {
   error: string | null;
 };
 
-type LaceConnectedAPI = {
-  getConfiguration: () => Promise<{
-    networkId: string;
-    indexerUri: string;
-    indexerWsUri: string;
-    proverServerUri: string;
-    [key: string]: unknown;
-  }>;
-  getShieldedAddresses: () => Promise<{ shieldedAddress: string }>;
-  getUnshieldedAddress: () => Promise<{ unshieldedAddress: string }>;
-  balanceUnsealedTransaction?: (tx: string) => Promise<{ tx: string }>;
-  submitTransaction: (tx: string) => Promise<string>;
-  getCoinPublicKey?: () => string;
-  getEncryptionPublicKey?: () => string;
-};
-
-declare global {
-  interface Window {
-    midnight?: Record<string, any>;
-  }
-}
-
-const WalletContext = createContext<{
+type WalletContextValue = {
   state: WalletState;
   connect: () => Promise<void>;
-  disconnect: () => Promise<void>;
-  signAndSubmit: (tx: unknown) => Promise<string>;
+  disconnect: () => void;
+  signAndSubmit: (tx: unknown) => Promise<void>;
   isCorrectNetwork: boolean;
-} | null>(null);
+  api: ConnectedAPI | null;
+  version: "v4" | null;
+  dustBalance: bigint;
+  dustSymbol: string;
+  refreshBalances: () => Promise<void>;
+};
 
-const WALLET_NETWORK = process.env.NEXT_PUBLIC_NETWORK || "undeployed";
-
+const WalletContext = createContext<WalletContextValue | null>(null);
+const WALLET_NETWORK = process.env.NEXT_PUBLIC_NETWORK || "preview";
 const EXPECTED_NETWORKS = new Set(["preview", "preprod", "undeployed", "mainnet", "qanet"]);
 
-function findWalletAPI(): any | null {
-  const midnight = window.midnight;
-  if (!midnight) return null;
+function uint8ArrayToHex(data: Uint8Array): string {
+  return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
-  for (const key of Object.keys(midnight)) {
-    const candidate = midnight[key];
-    if (candidate && typeof candidate === "object" && typeof candidate.connect === "function") {
-      return candidate;
-    }
+function selectWallet(): InitialAPI {
+  if (typeof window === "undefined" || !window.midnight) {
+    throw new Error("No Midnight wallet found. Please install a Midnight wallet extension.");
   }
-  return null;
+
+  const wallets = Object.values(window.midnight) as InitialAPI[];
+  const wallet = wallets[0] ?? window.midnight.mnLace ?? window.midnight.lace;
+  if (!wallet) throw new Error("No Midnight wallet found. Please install a Midnight wallet extension.");
+  return wallet;
+}
+
+function userFacingError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("Unauthorized request origin")) return "Please authorize this site in Lace, then try again.";
+  if (/locked|password|unlock/i.test(message)) return "Lace is locked. Unlock it in the extension and try again.";
+  if (/rejected|cancelled|canceled/i.test(message)) return "Request rejected in Lace.";
+  return message || "Wallet connection failed";
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<WalletState>({
-    isConnected: false,
-    address: null,
-    networkId: null,
-    error: null,
-  });
-  const [api, setApi] = useState<LaceConnectedAPI | null>(null);
+  const [state, setState] = useState<WalletState>({ isConnected: false, address: null, networkId: null, error: null });
+  const [api, setApi] = useState<ConnectedAPI | null>(null);
+  const [dustBalance, setDustBalance] = useState(0n);
+
+  const refreshBalances = useCallback(async () => {
+    if (!api) return;
+    try {
+      setDustBalance((await api.getDustBalance()).balance);
+    } catch (error) {
+      setState((current) => ({ ...current, error: userFacingError(error) }));
+    }
+  }, [api]);
 
   const connect = useCallback(async () => {
-    const walletApi = findWalletAPI();
-    if (!walletApi) {
-      setState((s) => ({ ...s, error: "Lace wallet not detected" }));
-      return;
-    }
-
+    setState((current) => ({ ...current, error: null }));
     try {
-      let enabledApi = walletApi;
-      if (typeof walletApi.enable === "function") {
-        enabledApi = await walletApi.enable();
-      } else if (typeof (window.midnight as any)?.enable === "function") {
-        enabledApi = await (window.midnight as any).enable();
-      }
+      const connectedApi = await selectWallet().connect(WALLET_NETWORK);
+      const [configuration, addresses, dust] = await Promise.all([
+        connectedApi.getConfiguration(),
+        connectedApi.getShieldedAddresses(),
+        connectedApi.getDustBalance(),
+      ]);
+      const connection = await connectedApi.getConnectionStatus();
+      if (connection.status !== "connected") throw new Error("Wallet connection lost. Please try again.");
 
-      const connected = await enabledApi.connect(WALLET_NETWORK);
-      const config = await connected.getConfiguration();
-      const addresses = await connected.getShieldedAddresses();
-
-      setApi(connected);
+      setApi(connectedApi);
+      setDustBalance(dust.balance);
       setState({
         isConnected: true,
         address: addresses.shieldedAddress,
-        networkId: config.networkId,
-        error: EXPECTED_NETWORKS.has(config.networkId) ? null : "Please switch to a supported Midnight network",
+        networkId: configuration.networkId,
+        error: EXPECTED_NETWORKS.has(configuration.networkId) ? null : `Please switch to a supported Midnight network (current: ${configuration.networkId})`,
       });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Connection failed";
-      if (message.includes("Unauthorized request origin")) {
-        setState((s) => ({ ...s, error: "Please authorize this site in the Lace Midnight wallet, then try again." }));
-      } else {
-        setState((s) => ({ ...s, error: message }));
-      }
+      window.focus();
+    } catch (error) {
+      setState((current) => ({ ...current, error: userFacingError(error) }));
     }
   }, []);
 
-  const disconnect = useCallback(async () => {
+  const disconnect = useCallback(() => {
     setApi(null);
-    setState({
-      isConnected: false,
-      address: null,
-      networkId: null,
-      error: null,
-    });
+    setDustBalance(0n);
+    setState({ isConnected: false, address: null, networkId: null, error: null });
   }, []);
 
-  const signAndSubmit = useCallback(
-    async (tx: unknown) => {
-      if (!api) throw new Error("Wallet not connected");
-      const serialized = (tx as any).serialize?.();
-      if (!serialized) throw new Error("Cannot serialize transaction");
-      const txHex = Buffer.from(serialized).toString("hex");
-      const balanced = await api.balanceUnsealedTransaction?.(txHex);
-      const finalTx = balanced?.tx ?? txHex;
-      return api.submitTransaction(finalTx);
-    },
-    [api]
-  );
+  const signAndSubmit = useCallback(async (tx: unknown): Promise<void> => {
+    if (!api) throw new Error("Wallet not connected");
+    const txHex = typeof tx === "string"
+      ? tx
+      : (() => {
+          const serialized = (tx as { serialize?: () => Uint8Array }).serialize?.();
+          if (!serialized) throw new Error("Cannot serialize transaction");
+          return uint8ArrayToHex(serialized);
+        })();
 
-  useEffect(() => {
-    const checkConnection = async () => {
-      const walletApi = findWalletAPI();
-      if (!walletApi) return;
-      try {
-        if (typeof walletApi.enable === "function") {
-          await walletApi.enable();
-        }
-        const connected = await walletApi.connect(WALLET_NETWORK);
-        const config = await connected.getConfiguration();
-        const addresses = await connected.getShieldedAddresses();
-        setApi(connected);
-        setState({
-          isConnected: true,
-          address: addresses.shieldedAddress,
-          networkId: config.networkId,
-          error: EXPECTED_NETWORKS.has(config.networkId) ? null : "Please switch to a supported Midnight network",
-        });
-      } catch {
-        // Not connected or user rejected
+    try {
+      const balanced = await api.balanceUnsealedTransaction(txHex, { payFees: true });
+      await api.submitTransaction(balanced.tx);
+      // Lace resolves on this same /app page. Request focus back from the
+      // extension popup without changing the user's route.
+      window.focus();
+    } catch (error) {
+      const message = userFacingError(error);
+      if (/Insufficient Funds|InsufficientFunds|could not balance dust/.test(message)) {
+        throw new Error("Insufficient DUST balance. Wait for DUST generation or fund the wallet before retrying.");
       }
-    };
-
-    checkConnection();
-
-    const onReady = () => {
-      checkConnection();
-    };
-
-    window.addEventListener("mnLace:initialized", onReady);
-    window.addEventListener("mnLace:accountChanged", onReady);
-
-    return () => {
-      window.removeEventListener("mnLace:initialized", onReady);
-      window.removeEventListener("mnLace:accountChanged", onReady);
-    };
-  }, []);
+      throw new Error(`Transaction failed: ${message}`);
+    }
+  }, [api]);
 
   return (
-    <WalletContext.Provider
-      value={{
-        state,
-        connect,
-        disconnect,
-        signAndSubmit,
-        isCorrectNetwork: state.networkId ? EXPECTED_NETWORKS.has(state.networkId) : false,
-      }}
-    >
+    <WalletContext.Provider value={{
+      state,
+      connect,
+      disconnect,
+      signAndSubmit,
+      isCorrectNetwork: state.networkId !== null && EXPECTED_NETWORKS.has(state.networkId),
+      api,
+      version: api ? "v4" : null,
+      dustBalance,
+      dustSymbol: "tDUST",
+      refreshBalances,
+    }}>
       {children}
     </WalletContext.Provider>
   );
@@ -179,14 +141,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
 export function useLaceWallet() {
   const context = useContext(WalletContext);
-  if (!context) {
-    throw new Error("useLaceWallet must be used within a WalletProvider");
-  }
+  if (!context) throw new Error("useLaceWallet must be used within a WalletProvider");
   return {
     ...context.state,
-    connect: context.connect,
-    disconnect: context.disconnect,
-    signAndSubmit: context.signAndSubmit,
-    isCorrectNetwork: context.isCorrectNetwork,
+    ...context,
+    formatAddress: (address: string) => address.length <= 12 ? address : `${address.slice(0, 6)}...${address.slice(-4)}`,
   };
 }

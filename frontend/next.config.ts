@@ -1,21 +1,15 @@
 import type { NextConfig } from "next";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const nextConfig: NextConfig = {
   turbopack: {
-    root: ".",
+    root: path.dirname(fileURLToPath(import.meta.url)),
   },
-  serverExternalPackages: [
-    "@midnight-ntwrk/midnight-js-protocol",
-    "@midnight-ntwrk/midnight-js-contracts",
-    "@midnight-ntwrk/midnight-js-http-client-proof-provider",
-    "@midnight-ntwrk/midnight-js-indexer-public-data-provider",
-    "@midnight-ntwrk/midnight-js-node-zk-config-provider",
-    "@midnight-ntwrk/wallet-sdk",
-    "@midnight-ntwrk/wallet-sdk-abstractions",
-    "@midnight-ntwrk/ledger-v8",
-    "@midnight-ntwrk/onchain-runtime-v3",
-    "ws",
-  ],
+  webpack: (config) => {
+    config.experiments = { ...config.experiments, asyncWebAssembly: true };
+    return config;
+  },
 };
 
 export default nextConfig;

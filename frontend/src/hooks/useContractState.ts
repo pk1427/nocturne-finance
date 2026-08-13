@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { ContractState as CompactContractState } from "@midnight-ntwrk/compact-runtime";
 
 type ContractState = {
   totalSupplied: bigint | null;
@@ -29,17 +28,10 @@ query GetContractState($address: HexEncoded!) {
 }
 `;
 
-function bigintFromBytes(bytes: Uint8Array): bigint {
-  let value = 0n;
-  for (let i = 0; i < bytes.length; i++) {
-    value = (value << 8n) | BigInt(bytes[i]);
-  }
-  return value;
-}
-
-function formatUnits(raw: bigint | null): string {
-  if (raw === null) return "0";
-  return raw.toLocaleString();
+function hexToBytes(value: string): Uint8Array {
+  const hex = value.replace(/^0x/, "");
+  if (hex.length % 2 !== 0) throw new Error("Contract state is not valid hexadecimal");
+  return Uint8Array.from({ length: hex.length / 2 }, (_, index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16));
 }
 
 export function useContractState() {
@@ -85,47 +77,28 @@ export function useContractState() {
         return;
       }
 
-      const cleaned = publicState.replace(/^0x/, "");
-      if (cleaned.length === 0) {
+      if (publicState.replace(/^0x/, "").length === 0) {
         setState((s) => ({ ...s, loading: false, error: "Contract state is empty" }));
         return;
       }
 
-      const buf = new Uint8Array(Buffer.from(cleaned, "hex"));
-      
       try {
-        const contractState = CompactContractState.deserialize(buf);
-        const stateValue = contractState.data.state;
-        
-        let totalSupplied: bigint | null = null;
-        let totalBorrowed: bigint | null = null;
-        let supplyIndex: bigint | null = null;
-        let borrowIndex: bigint | null = null;
-        let lastAccrualTimestamp: bigint | null = null;
-
-        if (stateValue.type() === "array") {
-          const arr = stateValue.asArray();
-          if (arr && arr.length >= 5) {
-            const cell0 = arr[0].asCell();
-            const cell1 = arr[1].asCell();
-            const cell2 = arr[2].asCell();
-            const cell3 = arr[3].asCell();
-            const cell4 = arr[4].asCell();
-
-            if (cell0) totalSupplied = bigintFromBytes(cell0.value[0]);
-            if (cell1) totalBorrowed = bigintFromBytes(cell1.value[0]);
-            if (cell2) supplyIndex = bigintFromBytes(cell2.value[0]);
-            if (cell3) borrowIndex = bigintFromBytes(cell3.value[0]);
-            if (cell4) lastAccrualTimestamp = bigintFromBytes(cell4.value[0]);
-          }
-        }
+        // Compact's StateValue encoding is not a positional array of ledger
+        // cells. Decode it through the generated contract, so additions to
+        // the ledger layout cannot silently shift the displayed values.
+        const [{ ContractState: CompactContractState }, NocturneLending] = await Promise.all([
+          import("@midnight-ntwrk/compact-runtime"),
+          import("@/lib/contracts/nocturne_lending/contract/index.js"),
+        ]);
+        const contractState = CompactContractState.deserialize(hexToBytes(publicState));
+        const ledger = NocturneLending.ledger(contractState.data);
 
         setState({
-          totalSupplied,
-          totalBorrowed,
-          supplyIndex,
-          borrowIndex,
-          lastAccrualTimestamp,
+          totalSupplied: ledger.totalSupplied,
+          totalBorrowed: ledger.totalBorrowed,
+          supplyIndex: ledger.supplyIndex,
+          borrowIndex: ledger.borrowIndex,
+          lastAccrualTimestamp: ledger.lastAccrualTimestamp,
           loading: false,
           error: null,
         });
@@ -155,6 +128,5 @@ export function useContractState() {
   return {
     ...state,
     refetch: fetchContractState,
-    formatUnits,
   };
 }

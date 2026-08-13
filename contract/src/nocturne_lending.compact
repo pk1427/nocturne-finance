@@ -27,6 +27,32 @@ export ledger reserveParams: ReserveParams;
 export ledger poolAdmin: Bytes<32>;
 
 // ---------------------------------------------------------------------------
+// One-time reserve initialization
+// ---------------------------------------------------------------------------
+// Compact ledger values are zero at deployment.  The lending circuits require
+// non-zero indexes and a non-zero kink, so a deployed pool must be initialized
+// before it accepts position calls.  Rates use basis points (SCALE = 10_000),
+// matching the math circuits below.
+
+export circuit initialize(initialTimestamp: Uint<64>): [] {
+  assert(supplyIndex == 0, "pool already initialized");
+  assert(borrowIndex == 0, "pool already initialized");
+
+  supplyIndex = disclose(1000000 as Uint<128>);
+  borrowIndex = disclose(1000000 as Uint<128>);
+  lastAccrualTimestamp = disclose(initialTimestamp);
+  reserveParams = disclose(ReserveParams {
+    collateralFactor: 7500,
+    baseRate: 100,
+    slope1: 900,
+    slope2: 4000,
+    kink: 8000,
+    reserveFactor: 1000,
+    liquidationThreshold: 8000,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Private user state (witness-managed)
 // ---------------------------------------------------------------------------
 // Shape (TypeScript side, enforced by mock/test implementations):

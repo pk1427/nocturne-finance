@@ -1,17 +1,19 @@
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 
 import { findDeployedContract, createUnprovenCallTx } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
-import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
+import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { resolveNetwork, getOrCreateSeed, getDeployment } from './network';
-import { createWallet, persistWalletState, unshieldedToken, type WalletContext } from './wallet';
+import { resolveNetwork, getDeployment } from './network';
+import { INITIAL_INDEX, newUserPosition, rescaleArguments } from '../contract/src/reserve-config.js';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
@@ -24,7 +26,6 @@ const { network, config: networkConfig } = resolveNetwork();
 if (network === 'preview' && !process.env.MIDNIGHT_PROOF_SERVER_URL) {
   process.env.MIDNIGHT_PROOF_SERVER_URL = 'https://proof-server.preview.midnight.network';
 }
-const SEED = getOrCreateSeed(network);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const zkConfigPath = path.resolve(__dirname, '..', 'contract', 'managed', 'nocturne_lending');
@@ -40,23 +41,19 @@ const NocturneLending = await import(pathToFileURL(contractPath).href);
 const deployedContract = CompiledContract.make('nocturne-lending', class extends NocturneLending.Contract {
   constructor() {
     super({
-      userSupplied: (_ctx: any): [any, bigint] => {
-        const state = { userSupplied: 0n, userBorrowed: 0n, userLastSupplyIndex: 1n, userLastBorrowIndex: 1n };
-        return [state, state.userSupplied];
+      userSupplied: (ctx: any): [UserPosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.userSupplied];
       },
-      userBorrowed: (_ctx: any): [any, bigint] => {
-        const state = { userSupplied: 0n, userBorrowed: 0n, userLastSupplyIndex: 1n, userLastBorrowIndex: 1n };
-        return [state, state.userBorrowed];
+      userBorrowed: (ctx: any): [UserPosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.userBorrowed];
       },
-      userLastSupplyIndex: (_ctx: any): [any, bigint] => {
-        const state = { userSupplied: 0n, userBorrowed: 0n, userLastSupplyIndex: 1n, userLastBorrowIndex: 1n };
-        return [state, state.userLastSupplyIndex];
+      userLastSupplyIndex: (ctx: any): [UserPosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.userLastSupplyIndex];
       },
-      userLastBorrowIndex: (_ctx: any): [any, bigint] => {
-        const state = { userSupplied: 0n, userBorrowed: 0n, userLastSupplyIndex: 1n, userLastBorrowIndex: 1n };
-        return [state, state.userLastBorrowIndex];
+      userLastBorrowIndex: (ctx: any): [UserPosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.userLastBorrowIndex];
       },
-      setUserPosition: (_ctx: any, newSupplied: bigint, newBorrowed: bigint, newLastSupplyIndex: bigint, newLastBorrowIndex: bigint): [any, []] => {
+      setUserPosition: (_ctx: any, newSupplied: bigint, newBorrowed: bigint, newLastSupplyIndex: bigint, newLastBorrowIndex: bigint): [UserPosition, []] => {
         const state = { userSupplied: newSupplied, userBorrowed: newBorrowed, userLastSupplyIndex: newLastSupplyIndex, userLastBorrowIndex: newLastBorrowIndex };
         return [state, []];
       },
@@ -66,23 +63,13 @@ const deployedContract = CompiledContract.make('nocturne-lending', class extends
   CompiledContract.withCompiledFileAssets(zkConfigPath),
 );
 
-async function createProviders(walletCtx: WalletContext) {
+async function createProviders(coinPublicKey: string, encryptionPublicKey: string, accountId: string) {
   const walletProvider = {
-    getCoinPublicKey: () => walletCtx.shieldedSecretKeys.coinPublicKey,
-    getEncryptionPublicKey: () => walletCtx.shieldedSecretKeys.encryptionPublicKey,
-    async balanceTx(tx: any, ttl?: Date) {
-      const recipe = await walletCtx.wallet.balanceUnboundTransaction(
-        tx,
-        { shieldedSecretKeys: walletCtx.shieldedSecretKeys, dustSecretKey: walletCtx.dustSecretKey },
-        { ttl: ttl ?? new Date(Date.now() + 30 * 60 * 1000) },
-      );
-      return walletCtx.wallet.finalizeRecipe(recipe);
-    },
-    submitTx: (tx: any) => walletCtx.wallet.submitTransaction(tx) as any,
+    getCoinPublicKey: () => coinPublicKey,
+    getEncryptionPublicKey: () => encryptionPublicKey,
   };
 
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
-  const accountId = walletCtx.unshieldedKeystore.getBech32Address().toString();
 
   return {
     privateStateProvider: levelPrivateStateProvider({
@@ -90,8 +77,8 @@ async function createProviders(walletCtx: WalletContext) {
       accountId,
       privateStoragePasswordProvider: () => PRIVATE_STATE_PASSWORD,
     }),
-    publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS),
     zkConfigProvider,
+    publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS, WebSocket),
     proofProvider: httpClientProofProvider(networkConfig.proofServer, zkConfigProvider),
     walletProvider,
     midnightProvider: walletProvider,
@@ -100,6 +87,13 @@ async function createProviders(walletCtx: WalletContext) {
 
 const VALID_ACTIONS = ['deposit', 'withdraw', 'borrow', 'repay'] as const;
 type Action = typeof VALID_ACTIONS[number];
+type UserPosition = ReturnType<typeof newUserPosition>;
+
+// A proof must not update private state until Lace has balanced and submitted
+// it. This in-memory hand-off intentionally expires; a failed/cancelled wallet
+// prompt therefore leaves the previous position intact.
+const pendingPrivateStates = new Map<string, { accountId: string; contractAddress: string; state: UserPosition; expiresAt: number }>();
+const PENDING_STATE_TTL_MS = 30 * 60 * 1000;
 
 function parseAmount(raw: string): bigint {
   const trimmed = raw.trim();
@@ -109,7 +103,14 @@ function parseAmount(raw: string): bigint {
   return BigInt(trimmed);
 }
 
-async function handleContractCall(providers: any, action: Action, amountStr: string): Promise<{ success: true; txHash: string } | { error: string }> {
+function isUserPosition(value: unknown): value is UserPosition {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Record<string, unknown>;
+  return ['userSupplied', 'userBorrowed', 'userLastSupplyIndex', 'userLastBorrowIndex']
+    .every((key) => typeof state[key] === 'bigint');
+}
+
+async function handleProveRequest(providers: any, action: Action, amountStr: string, accountId: string): Promise<{ success: true; provenTx: string; pendingId: string } | { error: string }> {
   try {
     const amount = parseAmount(amountStr);
     if (amount <= 0n) {
@@ -122,73 +123,57 @@ async function handleContractCall(providers: any, action: Action, amountStr: str
     }
 
     providers.privateStateProvider.setContractAddress(deployment.address);
-    await providers.privateStateProvider.set(PRIVATE_STATE_ID, {
-      userSupplied: 0n,
-      userBorrowed: 0n,
-      userLastSupplyIndex: 1n,
-      userLastBorrowIndex: 1n,
-    });
+    const savedState = await providers.privateStateProvider.get(PRIVATE_STATE_ID);
+    const position = isUserPosition(savedState) ? savedState : newUserPosition();
+    if (!isUserPosition(savedState)) {
+      await providers.privateStateProvider.set(PRIVATE_STATE_ID, position);
+    }
+
+    const storedBalance = action === 'deposit' || action === 'withdraw'
+      ? position.userSupplied
+      : position.userBorrowed;
+    const lastIndex = action === 'deposit' || action === 'withdraw'
+      ? position.userLastSupplyIndex
+      : position.userLastBorrowIndex;
+    const { quotient, remainder } = rescaleArguments(storedBalance, INITIAL_INDEX, lastIndex);
 
     const callOptions = {
       compiledContract: deployedContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
       circuitId: action,
-      args: [amount, 0n, 0n],
+      args: [amount, quotient, remainder],
     };
 
+    console.log(`[${new Date().toISOString()}] Proving ${action} for amount ${amount}`);
     const unprovenTx = await createUnprovenCallTx(providers, callOptions);
     const provenTx = await providers.proofProvider.proveTx(unprovenTx.private.unprovenTx);
-    const ttl = new Date(Date.now() + 30 * 60 * 1000);
-    const balancedTx = await providers.walletProvider.balanceTx(provenTx, ttl);
-    const txHash = await providers.walletProvider.submitTx(balancedTx);
-    await providers.privateStateProvider.set(PRIVATE_STATE_ID, unprovenTx.private.nextPrivateState);
 
-    return { success: true, txHash };
+    const serialized = provenTx.serialize();
+    const txHex = Buffer.from(serialized).toString('hex');
+
+    console.log(`[${new Date().toISOString()}] Prove succeeded for ${action}, tx length: ${txHex.length}`);
+
+    const pendingId = randomUUID();
+    pendingPrivateStates.set(pendingId, {
+      accountId,
+      contractAddress: deployment.address,
+      state: unprovenTx.private.nextPrivateState as unknown as UserPosition,
+      expiresAt: Date.now() + PENDING_STATE_TTL_MS,
+    });
+    return { success: true, provenTx: txHex, pendingId };
   } catch (err: any) {
-    console.error('Full error:', err);
-    console.error('Error stack:', err.stack);
-    const debug = err?.debug || err?.cause?.debug || null;
-    const message = debug ? (debug.error || debug.message || 'Transaction failed') : (err.message || 'Transaction failed');
-    return { error: message };
+    console.error(`[${new Date().toISOString()}] Prove error:`, err.message);
+    return { error: err.message || 'Proving failed' };
   }
 }
 
 async function main() {
+  setNetworkId(network);
+
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log(`║  Nocturne Finance Interact Server (${network})`);
+  console.log(`║  Nocturne Finance Proof Server (${network})`);
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
-
-  const seed = SEED;
-
-  console.log('─── Wallet setup ───────────────────────────────────────────────\n');
-  console.log('  Creating wallet...');
-  const walletCtx = await createWallet({ network, networkConfig, seed });
-  const restoredCount = Object.values(walletCtx.restored).filter(Boolean).length;
-  if (restoredCount > 0) {
-    console.log(`  Restored ${restoredCount}/3 child wallets from .midnight-wallet-state`);
-  }
-
-  console.log('  Syncing with network...');
-  console.log('  ℹ  This may take several minutes depending on network size.');
-  console.log('     RPC disconnection messages during sync are normal and can be safely ignored.\n');
-  const syncStart = Date.now();
-  const syncInterval = setInterval(() => {
-    const elapsed = Math.round((Date.now() - syncStart) / 1000);
-    process.stdout.write(`\r  ⏳ Still syncing... (${elapsed}s elapsed)   `);
-  }, 5000);
-  const state = await walletCtx.wallet.waitForSyncedState();
-  clearInterval(syncInterval);
-  process.stdout.write('\r  ✓ Synced with network.                                      \n');
-
-  await persistWalletState(network, walletCtx);
-
-  const address = walletCtx.unshieldedKeystore.getBech32Address();
-  const balance = state.unshielded.balances[unshieldedToken().raw] ?? 0n;
-  console.log(`\n  Wallet Address: ${address}`);
-  console.log(`  Balance: ${balance.toLocaleString()} tNight\n`);
-
-  const providers = await createProviders(walletCtx);
 
   const deployment = getDeployment(network);
   if (deployment) {
@@ -202,67 +187,56 @@ async function main() {
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(200);
+      res.writeHead(204);
       res.end();
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/api/wallet') {
-      const deployment = getDeployment(network);
+    if (req.method === 'GET' && req.url === '/api/contract-info') {
       res.writeHead(200);
       res.end(JSON.stringify({
-        address: walletCtx.unshieldedKeystore.getBech32Address().toString(),
         network,
         contractAddress: deployment?.address ?? null,
       }));
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/api/contract/preview') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', async () => {
-        try {
-          const parsed = JSON.parse(body);
-          const { action, amount } = parsed;
-
-          if (!action || !VALID_ACTIONS.includes(action)) {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${VALID_ACTIONS.join(', ')}` }));
-            return;
-          }
-
-          if (typeof amount !== 'string') {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Amount must be a string' }));
-            return;
-          }
-
-          const deployment = getDeployment(network);
-          if (!deployment) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: `No deploy on file for network ${network}` }));
-            return;
-          }
-
-          res.writeHead(200);
-          res.end(JSON.stringify({
-            action,
-            amount,
-            network,
-            contractAddress: deployment.address,
-            walletAddress: walletCtx.unshieldedKeystore.getBech32Address().toString(),
-            estimatedFee: '1 SPECK',
-          }));
-        } catch (err: any) {
+    if (req.method === 'GET' && req.url?.startsWith('/api/contract/position')) {
+      try {
+        const accountId = new URL(req.url, 'http://localhost').searchParams.get('accountId');
+        if (!accountId || accountId.length > 512) {
           res.writeHead(400);
-          res.end(JSON.stringify({ error: `Invalid JSON: ${err.message}` }));
+          res.end(JSON.stringify({ error: 'A valid accountId is required' }));
+          return;
         }
-      });
+        const deployment = getDeployment(network);
+        if (!deployment) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: `No deploy on file for network ${network}.` }));
+          return;
+        }
+
+        const providers = await createProviders('', '', accountId);
+        providers.privateStateProvider.setContractAddress(deployment.address);
+        const savedState = await providers.privateStateProvider.get(PRIVATE_STATE_ID);
+        const position = isUserPosition(savedState) ? savedState : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({
+          position: position && {
+            userSupplied: position.userSupplied.toString(),
+            userBorrowed: position.userBorrowed.toString(),
+            userLastSupplyIndex: position.userLastSupplyIndex.toString(),
+            userLastBorrowIndex: position.userLastBorrowIndex.toString(),
+          },
+        }));
+      } catch (err: any) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message || 'Could not read private position' }));
+      }
       return;
     }
 
@@ -272,11 +246,17 @@ async function main() {
       req.on('end', async () => {
         try {
           const parsed = JSON.parse(body);
-          const { action, amount } = parsed;
+          const { action, amount, coinPublicKey, encryptionPublicKey, accountId } = parsed;
 
           if (!action || !VALID_ACTIONS.includes(action)) {
             res.writeHead(400);
             res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${VALID_ACTIONS.join(', ')}` }));
+            return;
+          }
+
+          if (!coinPublicKey || !encryptionPublicKey || !accountId) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'coinPublicKey, encryptionPublicKey, and accountId are required' }));
             return;
           }
 
@@ -286,173 +266,78 @@ async function main() {
             return;
           }
 
-          const deployment = getDeployment(network);
-          if (!deployment) {
+          const providers = await createProviders(coinPublicKey, encryptionPublicKey, accountId);
+          const result = await handleProveRequest(providers, action as Action, amount, accountId);
+
+          if ('error' in result) {
             res.writeHead(500);
-            res.end(JSON.stringify({ error: `No deploy on file for network ${network}` }));
-            return;
+            res.end(JSON.stringify(result));
+          } else {
+            res.writeHead(200);
+            res.end(JSON.stringify(result));
           }
-
-          providers.privateStateProvider.setContractAddress(deployment.address);
-          await providers.privateStateProvider.set(PRIVATE_STATE_ID, {
-            userSupplied: 0n,
-            userBorrowed: 0n,
-            userLastSupplyIndex: 1n,
-            userLastBorrowIndex: 1n,
-          });
-
-          const callOptions = {
-            compiledContract: deployedContract as any,
-            contractAddress: deployment.address,
-            privateStateId: PRIVATE_STATE_ID,
-            circuitId: action,
-            args: [BigInt(amount), 0n, 0n],
-          };
-
-          console.log(`[${new Date().toISOString()}] Proving ${action} for amount ${amount}`);
-          const unprovenTx = await createUnprovenCallTx(providers, callOptions);
-          const provenTx = await providers.proofProvider.proveTx(unprovenTx.private.unprovenTx);
-
-          console.log(`[${new Date().toISOString()}] Prove succeeded for ${action}`);
-
-          res.writeHead(200);
-          res.end(JSON.stringify({
-            action,
-            amount,
-            provenTx,
-            nextPrivateState: unprovenTx.private.nextPrivateState,
-          }));
         } catch (err: any) {
-          console.error(`[${new Date().toISOString()}] Prove error:`, err.message);
-          res.writeHead(500);
-          res.end(JSON.stringify({ error: err.message || 'Proving failed' }));
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: `Invalid JSON: ${err.message}` }));
         }
       });
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/api/contract/submit') {
+    if (req.method === 'POST' && req.url === '/api/contract/commit') {
       let body = '';
       req.on('data', (chunk) => { body += chunk; });
       req.on('end', async () => {
         try {
-          const parsed = JSON.parse(body);
-          const { action, amount, signedTx } = parsed;
-
-          if (!action || !VALID_ACTIONS.includes(action)) {
+          const { pendingId, accountId, txHash } = JSON.parse(body);
+          const pending = typeof pendingId === 'string' ? pendingPrivateStates.get(pendingId) : undefined;
+          if (!pending || pending.expiresAt < Date.now()) {
+            if (typeof pendingId === 'string') pendingPrivateStates.delete(pendingId);
             res.writeHead(400);
-            res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${VALID_ACTIONS.join(', ')}` }));
+            res.end(JSON.stringify({ error: 'Unknown or expired pending transaction' }));
             return;
           }
-
-          if (typeof amount !== 'string') {
+          if (pending.accountId !== accountId || typeof txHash !== 'string' || txHash.length === 0) {
             res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Amount must be a string' }));
+            res.end(JSON.stringify({ error: 'Pending transaction does not match the submitting account' }));
             return;
           }
 
-          const deployment = getDeployment(network);
-          if (!deployment) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: `No deploy on file for network ${network}` }));
-            return;
-          }
-
-          console.log(`[${new Date().toISOString()}] Submitting ${action} for amount ${amount}`);
-
-          const unprovenTx = await createUnprovenCallTx(providers, {
-            compiledContract: deployedContract as any,
-            contractAddress: deployment.address,
-            privateStateId: PRIVATE_STATE_ID,
-            circuitId: action,
-            args: [BigInt(amount), 0n, 0n],
-          });
-
-          const provenTx = await providers.proofProvider.proveTx(unprovenTx.private.unprovenTx);
-          const ttl = new Date(Date.now() + 30 * 60 * 1000);
-          const balancedTx = await providers.walletProvider.balanceTx(provenTx, ttl);
-          const txHash = await providers.walletProvider.submitTx(balancedTx);
-
-          await providers.privateStateProvider.set(PRIVATE_STATE_ID, unprovenTx.private.nextPrivateState);
-
-          console.log(`[${new Date().toISOString()}] ${action} succeeded: txHash=${txHash}`);
+          const providers = await createProviders('', '', accountId);
+          providers.privateStateProvider.setContractAddress(pending.contractAddress);
+          await providers.privateStateProvider.set(PRIVATE_STATE_ID, pending.state);
+          pendingPrivateStates.delete(pendingId);
           res.writeHead(200);
-          res.end(JSON.stringify({ success: true, txHash }));
+          res.end(JSON.stringify({ success: true }));
         } catch (err: any) {
-          console.error(`[${new Date().toISOString()}] Submit error:`, err.message);
-          res.writeHead(500);
-          res.end(JSON.stringify({ error: err.message || 'Submission failed' }));
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: `Invalid commit request: ${err.message}` }));
         }
       });
       return;
     }
 
-    if (req.method !== 'POST' || req.url !== '/api/contract') {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: 'Not found. Use POST /api/contract' }));
-      return;
-    }
-
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const parsed = JSON.parse(body);
-        const { action, amount } = parsed;
-
-        if (!action || !VALID_ACTIONS.includes(action)) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${VALID_ACTIONS.join(', ')}` }));
-          return;
-        }
-
-        if (typeof amount !== 'string') {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'Amount must be a string' }));
-          return;
-        }
-
-        console.log(`[${new Date().toISOString()}] Received ${action} request for amount ${amount}`);
-        const result = await handleContractCall(providers, action as Action, amount);
-
-        if ('error' in result) {
-          console.log(`[${new Date().toISOString()}] ${action} failed: ${result.error}`);
-          res.writeHead(500);
-          res.end(JSON.stringify(result));
-        } else {
-          console.log(`[${new Date().toISOString()}] ${action} succeeded: txHash=${result.txHash}`);
-          res.writeHead(200);
-          res.end(JSON.stringify(result));
-        }
-      } catch (err: any) {
-        console.error(`[${new Date().toISOString()}] Parse error:`, err.message);
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: `Invalid JSON: ${err.message}` }));
-      }
-    });
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: 'Not found. Use POST /api/contract/prove, POST /api/contract/commit, or GET /api/contract/position' }));
   });
 
   server.listen(port, () => {
-    console.log(`  Server running on http://localhost:${port}`);
-    console.log('  Press Ctrl+C to stop\n');
+    console.log(`  Proof server running on http://localhost:${port}\n`);
   });
 
-  const gracefulShutdown = async (signal: string) => {
-    console.log(`\n\n  Received ${signal}, shutting down gracefully...`);
-    server.close(async () => {
-      try {
-        await persistWalletState(network, walletCtx);
-        await walletCtx.wallet.stop();
-        console.log('  Wallet state saved and stopped.\n');
-      } catch (err) {
-        console.error('  Error during shutdown:', err);
-      }
+  process.on('SIGINT', () => {
+    console.log('\n\n  Received SIGINT, shutting down gracefully...\n');
+    server.close(() => {
       process.exit(0);
     });
-  };
+  });
 
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGTERM', () => {
+    console.log('\n\n  Received SIGTERM, shutting down gracefully...\n');
+    server.close(() => {
+      process.exit(0);
+    });
+  });
 }
 
 main().catch((err) => {

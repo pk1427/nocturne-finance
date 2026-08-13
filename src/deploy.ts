@@ -13,12 +13,13 @@ import { WebSocket } from 'ws';
 import * as Rx from 'rxjs';
 
 // Midnight SDK imports
-import { deployContract } from '@midnight-ntwrk/midnight-js-contracts';
+import { deployContract, findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import { newUserPosition } from '../contract/src/reserve-config.js';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
@@ -313,6 +314,19 @@ async function main() {
 
   recordDeployment(network, contractAddress, address.toString());
   console.log('  Saved to .midnight-state.json\n');
+
+  // Deployment creates an all-zero ledger. Initialize immediately so no
+  // position call can run against zero indexes or an unset rate curve.
+  const initializedContract: any = await findDeployedContract(providers, {
+    compiledContract: deployedContract as any,
+    contractAddress,
+    privateStateId: PRIVATE_STATE_ID,
+    initialPrivateState: newUserPosition(),
+  });
+  const initialTimestamp = BigInt(Math.floor(Date.now() / 1000));
+  console.log(`  Initializing fixed reserve at timestamp ${initialTimestamp}...`);
+  await initializedContract.callTx.initialize(initialTimestamp);
+  console.log('  ✅ Fixed reserve initialized.\n');
 
   await persistWalletState(network, walletCtx);
   await walletCtx.wallet.stop();

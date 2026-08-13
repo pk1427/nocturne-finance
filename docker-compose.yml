@@ -55,6 +55,8 @@ services:
     command: ["midnight-proof-server -v"]
     ports:
       - "6300:6300"
+    volumes:
+      - ./contract/managed/nocturne_lending/keys:/app/keys
     environment:
       RUST_BACKTRACE: "full"
     healthcheck:

@@ -1,6 +1,4 @@
-/**
- * Check wallet balance on the local Midnight devnet
- */
+/** Check the active Midnight wallet's transaction-funding readiness. */
 import { WebSocket } from 'ws';
 
 // Midnight SDK imports
@@ -16,6 +14,14 @@ globalThis.WebSocket = WebSocket;
 
 const { network, config: networkConfig } = resolveNetwork();
 const SEED = getOrCreateSeed(network);
+const NIGHT_UNIT = 1_000_000n;
+const DUST_UNIT = 1_000_000_000_000_000n;
+
+function formatUnits(value: bigint, unit: bigint, decimals: number): string {
+  const whole = value / unit;
+  const fraction = (value % unit).toString().padStart(decimals, '0');
+  return `${whole.toLocaleString()}.${fraction}`;
+}
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
@@ -46,15 +52,56 @@ async function main() {
 
     const address = walletCtx.unshieldedKeystore.getBech32Address();
     const tNightBalance = state.unshielded.balances[unshieldedToken().raw] ?? 0n;
-    const dustBalance = state.dust.balance(new Date());
+    const now = new Date();
+    const dustState = state.dust;
+    const dustBalance = dustState.balance(now);
+    const availableCoins = state.unshielded.availableCoins;
+    const registeredCoins = availableCoins.filter((coin: any) => coin.meta?.registeredForDustGeneration === true);
+    const unregisteredCoins = availableCoins.filter((coin: any) => coin.meta?.registeredForDustGeneration !== true);
+    const registeredNightUtxos = registeredCoins.map((coin: any) => ({
+      ...coin.utxo,
+      ctime: coin.meta.ctime,
+      registeredForDustGeneration: coin.meta.registeredForDustGeneration,
+    }));
+    const dustEstimates = dustState.estimateDustGeneration(registeredNightUtxos, now);
 
     console.log('\n─── Wallet Details ─────────────────────────────────────────────\n');
     console.log(`  Address: ${address}`);
     console.log(`  Network: ${networkConfig.networkId}\n`);
 
     console.log('─── Balances ───────────────────────────────────────────────────\n');
-    console.log(`  tNight: ${tNightBalance.toLocaleString()}`);
-    console.log(`  DUST:   ${dustBalance.toLocaleString()}\n`);
+    console.log(`  tNight: ${tNightBalance.toLocaleString()} raw (${formatUnits(tNightBalance, NIGHT_UNIT, 6)} tNight)`);
+    console.log(`  DUST:   ${dustBalance.toLocaleString()} raw (${formatUnits(dustBalance, DUST_UNIT, 15)} DUST)\n`);
+    console.log('─── DUST Generation Status ────────────────────────────────────\n');
+    console.log(`  Available tNight UTXOs:    ${availableCoins.length}`);
+    console.log(`  Registered for generation: ${registeredCoins.length}`);
+    console.log(`  Awaiting registration:     ${unregisteredCoins.length}\n`);
+
+    console.log('─── Read-only DUST Generation Estimate ─────────────────────────\n');
+    console.log(`  Timestamp: ${now.toISOString()}`);
+    if (dustEstimates.length === 0) {
+      console.log('  No registered tNight UTXOs available for estimation.\n');
+    } else {
+      for (const [index, estimate] of dustEstimates.entries()) {
+        const nightAmount = estimate.utxo.value;
+        const { dust } = estimate;
+        console.log(`  Registered UTXO ${index + 1}:`);
+        console.log(`    Backing tNight:       ${nightAmount.toLocaleString()} raw (${formatUnits(nightAmount, NIGHT_UNIT, 6)} tNight)`);
+        console.log(`    UTXO creation time:   ${estimate.utxo.ctime.toISOString()}`);
+        console.log(`    Registration status:  ${estimate.utxo.registeredForDustGeneration ? 'registered' : 'unregistered'}`);
+        console.log(`    Theoretical DUST now: ${dust.generatedNow.toLocaleString()} raw (${formatUnits(dust.generatedNow, DUST_UNIT, 15)} DUST)`);
+        console.log(`    Estimated rate:       ${dust.rate.toLocaleString()} SPECK/s`);
+        console.log(`    Estimated cap:        ${dust.maxCap.toLocaleString()} raw (${formatUnits(dust.maxCap, DUST_UNIT, 15)} DUST)`);
+        console.log(`    Estimated cap time:   ${dust.maxCapReachedAt.toISOString()}`);
+      }
+      console.log('  Note: this SDK estimator projects from the tNight UTXO creation time.');
+      console.log('  The DUST balance above is the authoritative spendable amount; a projection does not prove registration has produced a spendable DUST UTXO.');
+      console.log('');
+    }
+
+    console.log('─── Initialize Fee Readiness ───────────────────────────────────\n');
+    console.log('  Exact initialize fee: unavailable without constructing an initialize transaction (not constructed).');
+    console.log(`  Current DUST can balance an unknown positive fee: ${dustBalance > 0n ? 'possibly — estimate the transaction first' : 'no'}\n`);
 
     if (tNightBalance === 0n) {
       if (network === 'undeployed') {
@@ -67,8 +114,16 @@ async function main() {
       } else {
         console.log('  ⚠ Wallet has no tNight.\n');
       }
+    } else if (dustBalance === 0n && unregisteredCoins.length > 0) {
+      console.log('  ⚠ tNight is present, but DUST is zero: contract transactions cannot be balanced yet.\n');
+      console.log('  Next: register the available tNight UTXOs for DUST generation, then wait for DUST to accrue.');
+      console.log('  Run: npm run setup -- --network preview\n');
+    } else if (dustBalance === 0n) {
+      console.log('  ⚠ All visible tNight UTXOs are registered, but DUST is still zero: contract transactions cannot be balanced yet.\n');
+      console.log('  DUST starts accruing only after registration is processed on-chain. On Preview this can take substantial time.');
+      console.log('  Recheck with: npm run check-balance -- --network preview\n');
     } else {
-      console.log('  ✅ Wallet is funded and ready!\n');
+      console.log('  ✅ Wallet has both tNight and DUST and can fund transactions.\n');
     }
 
     await persistWalletState(network, walletCtx);
