@@ -17,7 +17,7 @@ const ACTION_COPY: Record<Action, { tab: string; title: string; description: str
 };
 
 const EXPLORER_CONTRACT_URL = process.env.NEXT_PUBLIC_EXPLORER_URL;
-const formatValue = (value: bigint | null) => value === null ? "—" : value.toLocaleString();
+const formatValue = (value: bigint | null) => value === null ? "—" : `${(value / 1_000_000n).toLocaleString()}.${(value % 1_000_000n).toString().padStart(6, "0")}`;
 const formatDust = (raw: bigint) => `${(raw / 1_000_000_000_000_000n).toLocaleString()}.${(raw % 1_000_000_000_000_000n).toString().padStart(15, "0").slice(0, 6)}`;
 
 export default function AppPage() {
@@ -37,7 +37,7 @@ export default function AppPage() {
   const supplied = privatePosition.position?.userSupplied ?? null;
   const borrowed = privatePosition.position?.userBorrowed ?? null;
   const positionLimit = action === "withdraw" ? supplied : action === "repay" ? borrowed : null;
-  const amountValue = /^\d+$/.test(amount) ? BigInt(amount) : 0n;
+  const amountValue = /^\d+(\.\d{1,6})?$/.test(amount) ? (() => { const [whole, fraction = ""] = amount.split("."); return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0") || "0"); })() : 0n;
   const nextValue = action === "deposit" ? (supplied ?? 0n) + amountValue
     : action === "withdraw" ? (supplied ?? 0n) - amountValue
       : action === "borrow" ? (borrowed ?? 0n) + amountValue
@@ -45,7 +45,7 @@ export default function AppPage() {
   const canSubmit = useMemo(() => isConnected && !selectedState.loading, [isConnected, selectedState.loading]);
 
   function validate() {
-    if (!/^\d+$/.test(amount) || amountValue <= 0n) { setValidationError("Enter a positive whole-number amount in protocol units."); return false; }
+    if (!/^\d+(\.\d{1,6})?$/.test(amount) || amountValue <= 0n) { setValidationError("Enter a positive tNight amount (up to 6 decimals)."); return false; }
     if ((action === "withdraw" || action === "repay") && positionLimit === null) { setValidationError("Your private position has not been loaded yet."); return false; }
     if (positionLimit !== null && amountValue > positionLimit) { setValidationError(`Amount exceeds your recorded ${action === "withdraw" ? "supplied" : "borrowed"} position.`); return false; }
     setValidationError(null); return true;
@@ -82,8 +82,8 @@ export default function AppPage() {
           <div className="mt-6 grid gap-7 lg:grid-cols-[1.12fr_.88fr]">
             <form onSubmit={openReview}>
               <div className="grid grid-cols-4 rounded-xl border border-white/10 bg-white/[0.025] p-1">{(Object.keys(ACTION_COPY) as Action[]).map((candidate) => <button key={candidate} type="button" onClick={() => { setAction(candidate); setValidationError(null); }} className={`rounded-lg px-2 py-3 text-center text-sm font-semibold transition ${action === candidate ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-300"}`}>{ACTION_COPY[candidate].tab}</button>)}</div>
-              <div className="mt-7 flex items-end justify-between gap-4"><label className="font-display text-lg font-semibold">Amount to {ACTION_COPY[action].tab.toLowerCase()}</label><span className="font-mono-ui text-xs text-slate-500">{action === "withdraw" ? `Supplied: ${formatValue(supplied)}` : action === "repay" ? `Borrowed: ${formatValue(borrowed)}` : "Protocol units"}</span></div>
-              <div className="mt-3 flex overflow-hidden rounded-2xl border border-white/15 bg-[#050b14] focus-within:border-cyan-300/50"><input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="numeric" placeholder="0" className="min-w-0 flex-1 bg-transparent px-5 py-5 font-mono-ui text-3xl text-white outline-none placeholder:text-slate-700"/><span className="flex items-center border-l border-white/15 px-5 font-mono-ui text-xs text-slate-400">UNIT</span></div>
+              <div className="mt-7 flex items-end justify-between gap-4"><label className="font-display text-lg font-semibold">Amount to {ACTION_COPY[action].tab.toLowerCase()}</label><span className="font-mono-ui text-xs text-slate-500">{action === "withdraw" ? `Supplied: ${formatValue(supplied)}` : action === "repay" ? `Borrowed: ${formatValue(borrowed)}` : "tNight balance"}</span></div>
+              <div className="mt-3 flex overflow-hidden rounded-2xl border border-white/15 bg-[#050b14] focus-within:border-cyan-300/50"><input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="0.000000" className="min-w-0 flex-1 bg-transparent px-5 py-5 font-mono-ui text-3xl text-white outline-none placeholder:text-slate-700"/><span className="flex items-center border-l border-white/15 px-5 font-mono-ui text-xs text-slate-400">tNIGHT</span></div>
               <div className="mt-4 grid grid-cols-4 gap-3">{[25, 50, 75, 100].map((percent) => <button key={percent} type="button" onClick={() => { if (positionLimit !== null) setAmount(((positionLimit * BigInt(percent)) / 100n).toString()); }} disabled={positionLimit === null} className="rounded-xl border border-white/10 py-3 font-mono-ui text-xs text-slate-400 transition hover:border-cyan-300/25 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40">{percent}%</button>)}</div>
               <button type="submit" disabled={!canSubmit} className={`mt-7 w-full rounded-2xl bg-gradient-to-r ${ACTION_COPY[action].accent} px-6 py-4 font-display text-lg font-bold text-slate-950 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50`}>{selectedState.loading ? "Processing…" : `${ACTION_COPY[action].tab} Nocturne Reserve`}</button>
               {(validationError || selectedState.error) && <p className="mt-4 text-sm text-rose-300">{validationError || selectedState.error}</p>}

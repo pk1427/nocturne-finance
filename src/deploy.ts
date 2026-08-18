@@ -128,7 +128,14 @@ async function main() {
 
   console.log('─── Wallet setup ───────────────────────────────────────────────\n');
   console.log('  Creating wallet...');
-  const walletCtx = await createWallet({ network, networkConfig, seed });
+  const walletCtx = await createWallet({
+    network,
+    networkConfig,
+    seed,
+    // A stale serialized DUST snapshot can reference an already-spent UTXO.
+    // Allow a one-shot seed-based rebuild without deleting the saved state.
+    restore: process.env.FRESH_WALLET_SYNC !== '1',
+  });
   const restoredCount = Object.values(walletCtx.restored).filter(Boolean).length;
   if (restoredCount > 0) {
     console.log(`  Restored ${restoredCount}/3 child wallets from .midnight-wallet-state — sync will resume from saved point.`);

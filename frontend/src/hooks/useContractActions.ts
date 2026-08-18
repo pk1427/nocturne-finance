@@ -43,6 +43,7 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
       }
 
       const shieldedAddresses = await api.getShieldedAddresses();
+      const { unshieldedAddress } = await api.getUnshieldedAddress();
       if (shieldedAddresses.shieldedAddress !== accountId) {
         throw new Error("Connected wallet changed. Please retry the action.");
       }
@@ -56,6 +57,7 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
           coinPublicKey: shieldedAddresses.shieldedCoinPublicKey,
           encryptionPublicKey: shieldedAddresses.shieldedEncryptionPublicKey,
           accountId: shieldedAddresses.shieldedAddress,
+          unshieldedAddress,
         }),
       });
 

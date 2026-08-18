@@ -332,3 +332,37 @@ export circuit repay(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemai
   assert(totalBorrowed >= amount, "totalBorrowed underflow");
   totalBorrowed = disclose((totalBorrowed - amount) as Uint<128>);
 }
+
+// ---------------------------------------------------------------------------
+// Native tNight custody entry points
+// ---------------------------------------------------------------------------
+//
+// The original four circuits above intentionally implement protocol-unit
+// accounting only.  These variants add the Midnight native-token transfer
+// primitive while preserving that accounting logic.  Amounts are native
+// tNight base units (6 decimals); the caller must therefore scale UI amounts
+// before proving.  The native token type is the all-zero Bytes<32> value.
+//
+// These circuits require a fresh deployment.  They are deliberately separate
+// entry points so the currently deployed virtual-accounting MVP remains
+// compatible until its replacement is initialized.
+
+export circuit deposit_native(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  receiveUnshielded(pad(32, ""), disclose(amount));
+  deposit(amount, rescaleQuotient, rescaleRemainder);
+}
+
+export circuit withdraw_native(recipient: UserAddress, amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  withdraw(amount, rescaleQuotient, rescaleRemainder);
+  sendUnshielded(pad(32, ""), disclose(amount), disclose(right<ContractAddress, UserAddress>(disclose(recipient))));
+}
+
+export circuit borrow_native(recipient: UserAddress, amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  borrow(amount, rescaleQuotient, rescaleRemainder);
+  sendUnshielded(pad(32, ""), disclose(amount), disclose(right<ContractAddress, UserAddress>(disclose(recipient))));
+}
+
+export circuit repay_native(amount: Uint<128>, rescaleQuotient: Uint<128>, rescaleRemainder: Uint<128>): [] {
+  receiveUnshielded(pad(32, ""), disclose(amount));
+  repay(amount, rescaleQuotient, rescaleRemainder);
+}

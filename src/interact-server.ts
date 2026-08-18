@@ -11,6 +11,8 @@ import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-pri
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import { encodeUserAddress } from '@midnight-ntwrk/midnight-js-protocol/ledger';
+import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
 import { resolveNetwork, getDeployment } from './network';
 import { INITIAL_INDEX, newUserPosition, rescaleArguments } from '../contract/src/reserve-config.js';
@@ -95,12 +97,15 @@ type UserPosition = ReturnType<typeof newUserPosition>;
 const pendingPrivateStates = new Map<string, { accountId: string; contractAddress: string; state: UserPosition; expiresAt: number }>();
 const PENDING_STATE_TTL_MS = 30 * 60 * 1000;
 
+const TNIGHT_SCALE = 1_000_000n;
+
 function parseAmount(raw: string): bigint {
   const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) {
-    throw new Error('Amount must be a non-negative integer string');
+  if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) {
+    throw new Error('Amount must be a tNight amount with up to 6 decimals');
   }
-  return BigInt(trimmed);
+  const [whole, fraction = ''] = trimmed.split('.');
+  return BigInt(whole) * TNIGHT_SCALE + BigInt(fraction.padEnd(6, '0') || '0');
 }
 
 function isUserPosition(value: unknown): value is UserPosition {
@@ -110,7 +115,7 @@ function isUserPosition(value: unknown): value is UserPosition {
     .every((key) => typeof state[key] === 'bigint');
 }
 
-async function handleProveRequest(providers: any, action: Action, amountStr: string, accountId: string): Promise<{ success: true; provenTx: string; pendingId: string } | { error: string }> {
+async function handleProveRequest(providers: any, action: Action, amountStr: string, accountId: string, unshieldedAddress: string): Promise<{ success: true; provenTx: string; pendingId: string } | { error: string }> {
   try {
     const amount = parseAmount(amountStr);
     if (amount <= 0n) {
@@ -137,12 +142,16 @@ async function handleProveRequest(providers: any, action: Action, amountStr: str
       : position.userLastBorrowIndex;
     const { quotient, remainder } = rescaleArguments(storedBalance, INITIAL_INDEX, lastIndex);
 
+    const decodedUnshielded = MidnightBech32m.parse(unshieldedAddress).decode(UnshieldedAddress, network);
+    const recipient = { bytes: encodeUserAddress(decodedUnshielded.hexString) };
     const callOptions = {
       compiledContract: deployedContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
-      circuitId: action,
-      args: [amount, quotient, remainder],
+      circuitId: `${action}_native`,
+      args: action === 'withdraw' || action === 'borrow'
+        ? [recipient, amount, quotient, remainder]
+        : [amount, quotient, remainder],
     };
 
     console.log(`[${new Date().toISOString()}] Proving ${action} for amount ${amount}`);
@@ -163,7 +172,8 @@ async function handleProveRequest(providers: any, action: Action, amountStr: str
     });
     return { success: true, provenTx: txHex, pendingId };
   } catch (err: any) {
-    console.error(`[${new Date().toISOString()}] Prove error:`, err.message);
+    console.error(`[${new Date().toISOString()}] Prove error:`, err?.stack || err?.message || err);
+    if (err?.cause) console.error('  Cause:', err.cause?.stack || err.cause?.message || err.cause);
     return { error: err.message || 'Proving failed' };
   }
 }
@@ -246,7 +256,7 @@ async function main() {
       req.on('end', async () => {
         try {
           const parsed = JSON.parse(body);
-          const { action, amount, coinPublicKey, encryptionPublicKey, accountId } = parsed;
+          const { action, amount, coinPublicKey, encryptionPublicKey, accountId, unshieldedAddress } = parsed;
 
           if (!action || !VALID_ACTIONS.includes(action)) {
             res.writeHead(400);
@@ -254,7 +264,7 @@ async function main() {
             return;
           }
 
-          if (!coinPublicKey || !encryptionPublicKey || !accountId) {
+          if (!coinPublicKey || !encryptionPublicKey || !accountId || typeof unshieldedAddress !== 'string') {
             res.writeHead(400);
             res.end(JSON.stringify({ error: 'coinPublicKey, encryptionPublicKey, and accountId are required' }));
             return;
@@ -267,7 +277,7 @@ async function main() {
           }
 
           const providers = await createProviders(coinPublicKey, encryptionPublicKey, accountId);
-          const result = await handleProveRequest(providers, action as Action, amount, accountId);
+          const result = await handleProveRequest(providers, action as Action, amount, accountId, unshieldedAddress);
 
           if ('error' in result) {
             res.writeHead(500);
