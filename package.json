@@ -6,7 +6,13 @@
   "scripts": {
     "setup": "npx tsx src/setup.ts",
     "deploy": "npx tsx src/deploy.ts",
+    "deploy-token": "npx tsx src/deploy-token.ts",
+    "deploy-multi": "npx tsx src/deploy-multi.ts",
+    "deploy-multi-complete": "npx tsx src/deploy-multi-complete.ts",
+    "test-multi-token-flow": "npx tsx src/test-multi-token-flow.ts",
+    "claim-token": "npx tsx src/claim-token.ts",
     "initialize": "npx tsx src/initialize.ts",
+    "initialize-multi": "npx tsx src/initialize-multi.ts",
     "cli": "npx tsx src/cli.ts",
     "check-balance": "npx tsx src/check-balance.ts",
     "reset-private-state": "npx tsx src/reset-private-state.ts",

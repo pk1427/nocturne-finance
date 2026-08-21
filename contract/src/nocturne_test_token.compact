@@ -1,0 +1,29 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// Nocturne-issued test asset. This is not Circle USDC or an external bridge.
+export ledger domainSep: Bytes<32>;
+export ledger claimed: Map<UserAddress, Boolean>;
+
+// Fixed faucet policy: 10,000 tUSDC base units per wallet, one claim ever.
+// tUSDC uses 6 decimals, so this is 0.010000 tUSDC for the initial smoke
+// market. Increase only through a reviewed contract upgrade.
+
+constructor() {
+  domainSep = pad(32, "nocturne:tUSDC:v1");
+}
+
+export circuit claim(recipient: UserAddress): [] {
+  assert(!claimed.member(disclose(recipient)), "faucet claim already used for this wallet");
+  mintUnshieldedToken(
+    domainSep,
+    disclose(10000 as Uint<64>),
+    disclose(right<ContractAddress, UserAddress>(disclose(recipient))),
+  );
+  claimed.insert(disclose(recipient), disclose(true));
+}
+
+export circuit token_color(): Bytes<32> {
+  return tokenType(domainSep, kernel.self());
+}

@@ -12,6 +12,16 @@ struct ReserveParams {
   liquidationThreshold: Uint<128>,
 }
 
+// Multi-asset registry foundation. The currently deployed contract remains
+// unchanged; these fields are consumed only by the next deployment revision.
+// tNight uses the all-zero token color. tUSDC is configured at initialization
+// as a Bytes<32> value supplied by the deployment/configuration layer.
+struct AssetReserveMeta {
+  enabled: Boolean,
+  isNative: Boolean,
+  tokenColor: Bytes<32>,
+}
+
 export ledger totalSupplied: Uint<128>;
 
 export ledger totalBorrowed: Uint<128>;
@@ -25,6 +35,9 @@ export ledger lastAccrualTimestamp: Uint<64>;
 export ledger reserveParams: ReserveParams;
 
 export ledger poolAdmin: Bytes<32>;
+
+export ledger tNightAsset: AssetReserveMeta;
+export ledger tUsdcAsset: AssetReserveMeta;
 
 // ---------------------------------------------------------------------------
 // One-time reserve initialization
@@ -50,6 +63,10 @@ export circuit initialize(initialTimestamp: Uint<64>): [] {
     reserveFactor: 1000,
     liquidationThreshold: 8000,
   });
+  tNightAsset = disclose(AssetReserveMeta { enabled: true, isNative: true, tokenColor: pad(32, "") });
+  // The tUSDC color is supplied by the configuration-aware initialization
+  // revision. It is intentionally not guessed from a string/field literal.
+  tUsdcAsset = disclose(AssetReserveMeta { enabled: false, isNative: false, tokenColor: pad(32, "") });
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,107 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+struct ReserveState {
+  enabled: Boolean,
+  tokenColor: Bytes<32>,
+  totalSupplied: Uint<128>,
+  totalBorrowed: Uint<128>,
+  supplyIndex: Uint<128>,
+  borrowIndex: Uint<128>,
+}
+
+export ledger tNightReserve: ReserveState;
+export ledger tUsdcReserve: ReserveState;
+
+witness tNightSupplied(): Uint<128>;
+witness tNightBorrowed(): Uint<128>;
+witness setTNightPosition(supplied: Uint<128>, borrowed: Uint<128>): [];
+witness tUsdcSupplied(): Uint<128>;
+witness tUsdcBorrowed(): Uint<128>;
+witness setTUsdcPosition(supplied: Uint<128>): [];
+witness setTUsdcBorrowedPosition(borrowed: Uint<128>): [];
+
+export pure circuit resolve_asset(color: Bytes<32>, tusdcColor: Bytes<32>): Uint<8> {
+  if (color == pad(32, "")) return 1;
+  if (color == tusdcColor) return 2;
+  return 0;
+}
+
+export circuit initialize(tusdcColor: Bytes<32>, timestamp: Uint<64>): [] {
+  assert(tNightReserve.enabled == false, "already initialized");
+  tNightReserve = disclose(ReserveState { enabled: true, tokenColor: pad(32, ""), totalSupplied: 0, totalBorrowed: 0, supplyIndex: 1000000, borrowIndex: 1000000 });
+  tUsdcReserve = disclose(ReserveState { enabled: false, tokenColor: tusdcColor, totalSupplied: 0, totalBorrowed: 0, supplyIndex: 1000000, borrowIndex: 1000000 });
+}
+
+// Enable the configured tUSDC reserve in a separate transaction. The color is
+// supplied as Bytes<32> by deployment/configuration; no string/field literal
+// conversion is performed inside Compact.
+export circuit configure_tusdc(color: Bytes<32>): [] {
+  assert(!tUsdcReserve.enabled, "tUSDC already configured");
+  assert(color == tUsdcReserve.tokenColor, "tUSDC token color mismatch");
+  tUsdcReserve = disclose(ReserveState { enabled: true, tokenColor: color, totalSupplied: 0, totalBorrowed: 0, supplyIndex: 1000000, borrowIndex: 1000000 });
+}
+
+export circuit supply_tusdc(color: Bytes<32>, amount: Uint<128>): [] {
+  assert(tUsdcReserve.enabled, "tUSDC reserve is not enabled");
+  assert(color == tUsdcReserve.tokenColor, "tUSDC token color mismatch");
+  assert(amount > 0, "amount must be positive");
+  receiveUnshielded(disclose(color), disclose(amount));
+  tUsdcReserve = disclose(ReserveState { enabled: true, tokenColor: tUsdcReserve.tokenColor, totalSupplied: (tUsdcReserve.totalSupplied + amount) as Uint<128>, totalBorrowed: tUsdcReserve.totalBorrowed, supplyIndex: tUsdcReserve.supplyIndex, borrowIndex: tUsdcReserve.borrowIndex });
+  setTUsdcPosition((tUsdcSupplied() + amount) as Uint<128>);
+}
+
+export circuit withdraw_tusdc(recipient: UserAddress, color: Bytes<32>, amount: Uint<128>): [] {
+  assert(tUsdcReserve.enabled, "tUSDC reserve is not enabled");
+  assert(color == tUsdcReserve.tokenColor, "tUSDC token color mismatch");
+  assert(amount > 0, "amount must be positive");
+  assert(amount <= tUsdcSupplied(), "insufficient tUSDC supplied position");
+  assert(amount <= tUsdcReserve.totalSupplied, "insufficient tUSDC liquidity");
+  sendUnshielded(disclose(color), disclose(amount), disclose(right<ContractAddress, UserAddress>(disclose(recipient))));
+  tUsdcReserve = disclose(ReserveState { enabled: true, tokenColor: tUsdcReserve.tokenColor, totalSupplied: (tUsdcReserve.totalSupplied - amount) as Uint<128>, totalBorrowed: tUsdcReserve.totalBorrowed, supplyIndex: tUsdcReserve.supplyIndex, borrowIndex: tUsdcReserve.borrowIndex });
+  setTUsdcPosition((tUsdcSupplied() - amount) as Uint<128>);
+}
+
+export circuit supply(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  const next: Uint<128> = (tNightSupplied() + amount) as Uint<128>;
+  tNightReserve = disclose(ReserveState { enabled: true, tokenColor: tNightReserve.tokenColor, totalSupplied: (tNightReserve.totalSupplied + amount) as Uint<128>, totalBorrowed: tNightReserve.totalBorrowed, supplyIndex: tNightReserve.supplyIndex, borrowIndex: tNightReserve.borrowIndex });
+  setTNightPosition(next, tNightBorrowed());
+}
+
+export circuit withdraw(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(amount <= tNightSupplied(), "insufficient supplied position");
+  assert(amount <= tNightReserve.totalSupplied, "insufficient reserve liquidity");
+  tNightReserve = disclose(ReserveState { enabled: true, tokenColor: tNightReserve.tokenColor, totalSupplied: (tNightReserve.totalSupplied - amount) as Uint<128>, totalBorrowed: tNightReserve.totalBorrowed, supplyIndex: tNightReserve.supplyIndex, borrowIndex: tNightReserve.borrowIndex });
+  setTNightPosition((tNightSupplied() - amount) as Uint<128>, tNightBorrowed());
+}
+
+export circuit borrow(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(tNightSupplied() > 0, "no collateral supplied");
+  tNightReserve = disclose(ReserveState { enabled: true, tokenColor: tNightReserve.tokenColor, totalSupplied: tNightReserve.totalSupplied, totalBorrowed: (tNightReserve.totalBorrowed + amount) as Uint<128>, supplyIndex: tNightReserve.supplyIndex, borrowIndex: tNightReserve.borrowIndex });
+  setTNightPosition(tNightSupplied(), (tNightBorrowed() + amount) as Uint<128>);
+}
+
+export circuit repay(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(amount <= tNightBorrowed(), "repayment exceeds position");
+  tNightReserve = disclose(ReserveState { enabled: true, tokenColor: tNightReserve.tokenColor, totalSupplied: tNightReserve.totalSupplied, totalBorrowed: (tNightReserve.totalBorrowed - amount) as Uint<128>, supplyIndex: tNightReserve.supplyIndex, borrowIndex: tNightReserve.borrowIndex });
+  setTNightPosition(tNightSupplied(), (tNightBorrowed() - amount) as Uint<128>);
+}
+
+export circuit borrow_tusdc(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(tNightSupplied() > 0, "no tNight collateral supplied");
+  tUsdcReserve = disclose(ReserveState { enabled: true, tokenColor: tUsdcReserve.tokenColor, totalSupplied: tUsdcReserve.totalSupplied, totalBorrowed: (tUsdcReserve.totalBorrowed + amount) as Uint<128>, supplyIndex: tUsdcReserve.supplyIndex, borrowIndex: tUsdcReserve.borrowIndex });
+  setTUsdcBorrowedPosition((tUsdcBorrowed() + amount) as Uint<128>);
+}
+
+export circuit repay_tusdc(amount: Uint<128>): [] {
+  assert(amount > 0, "amount must be positive");
+  assert(amount <= tUsdcBorrowed(), "repayment exceeds tUSDC position");
+  tUsdcReserve = disclose(ReserveState { enabled: true, tokenColor: tUsdcReserve.tokenColor, totalSupplied: tUsdcReserve.totalSupplied, totalBorrowed: (tUsdcReserve.totalBorrowed - amount) as Uint<128>, supplyIndex: tUsdcReserve.supplyIndex, borrowIndex: tUsdcReserve.borrowIndex });
+  setTUsdcBorrowedPosition((tUsdcBorrowed() - amount) as Uint<128>);
+}

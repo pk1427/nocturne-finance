@@ -14,14 +14,33 @@ import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import { encodeUserAddress } from '@midnight-ntwrk/midnight-js-protocol/ledger';
 import { MidnightBech32m, UnshieldedAddress } from '@midnight-ntwrk/wallet-sdk-address-format';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { resolveNetwork, getDeployment } from './network';
-import { INITIAL_INDEX, newUserPosition, rescaleArguments } from '../contract/src/reserve-config.js';
+import { resolveNetwork, getDeployment, getOrCreateSeed } from './network.js';
+import { createWallet, persistWalletState } from './wallet.js';
+import { loadMultiManifest } from './multi-config.js';
+
+function getMultiContractAddress(network: string): string {
+  const manifest = loadMultiManifest(network);
+  if (!manifest.contractAddress) {
+    throw new Error('Multi contract not deployed. Run npm run deploy-multi-complete first.');
+  }
+  return manifest.contractAddress;
+}
+
+const { TUSDC_COLOR: hex } = await import('./multi-config.js');
+const TUSDC_COLOR = hexToBytes32(hex);
+
+function hexToBytes32(hex: string): Uint8Array {
+  const clean = hex.replace(/^0x/i, '');
+  if (clean.length !== 64) throw new Error(`Expected 64-char hex for Bytes<32>, got ${clean.length}: ${hex}`);
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = Number.parseInt(clean.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
-
-const PRIVATE_STATE_ID = 'nocturneLendingPrivateState';
-const PRIVATE_STATE_PASSWORD = process.env.PRIVATE_STATE_PASSWORD?.trim() || 'Local-Devnet-Development-Placeholder-1';
 
 const { network, config: networkConfig } = resolveNetwork();
 
@@ -30,33 +49,48 @@ if (network === 'preview' && !process.env.MIDNIGHT_PROOF_SERVER_URL) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contract', 'managed', 'nocturne_lending');
+const zkConfigPath = path.resolve(__dirname, '..', 'contract', 'managed', 'nocturne_lending_multi');
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
 
 if (!fs.existsSync(contractPath)) {
-  console.error('\n❌ Contract not compiled! Run: npm run compile\n');
+  console.error('\n❌ Multi contract not compiled! Run: cd contract && npm run compile\n');
   process.exit(1);
 }
 
-const NocturneLending = await import(pathToFileURL(contractPath).href);
+const NocturneLendingMulti = await import(pathToFileURL(contractPath).href);
 
-const deployedContract = CompiledContract.make('nocturne-lending', class extends NocturneLending.Contract {
+interface PrivatePosition {
+  tNightSupplied: bigint;
+  tNightBorrowed: bigint;
+  tUsdcSupplied: bigint;
+  tUsdcBorrowed: bigint;
+}
+
+const deployedContract = CompiledContract.make('nocturne_lending_multi', class extends NocturneLendingMulti.Contract {
   constructor() {
     super({
-      userSupplied: (ctx: any): [UserPosition, bigint] => {
-        return [ctx.privateState, ctx.privateState.userSupplied];
+      tNightSupplied: (ctx: any): [PrivatePosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.tNightSupplied ?? 0n];
       },
-      userBorrowed: (ctx: any): [UserPosition, bigint] => {
-        return [ctx.privateState, ctx.privateState.userBorrowed];
+      tNightBorrowed: (ctx: any): [PrivatePosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.tNightBorrowed ?? 0n];
       },
-      userLastSupplyIndex: (ctx: any): [UserPosition, bigint] => {
-        return [ctx.privateState, ctx.privateState.userLastSupplyIndex];
+      setTNightPosition: (_ctx: any, supplied: bigint, borrowed: bigint): [PrivatePosition, []] => {
+        const state = { tNightSupplied: supplied, tNightBorrowed: borrowed, tUsdcSupplied: _ctx.privateState.tUsdcSupplied ?? 0n, tUsdcBorrowed: _ctx.privateState.tUsdcBorrowed ?? 0n };
+        return [state, []];
       },
-      userLastBorrowIndex: (ctx: any): [UserPosition, bigint] => {
-        return [ctx.privateState, ctx.privateState.userLastBorrowIndex];
+      tUsdcSupplied: (ctx: any): [PrivatePosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.tUsdcSupplied ?? 0n];
       },
-      setUserPosition: (_ctx: any, newSupplied: bigint, newBorrowed: bigint, newLastSupplyIndex: bigint, newLastBorrowIndex: bigint): [UserPosition, []] => {
-        const state = { userSupplied: newSupplied, userBorrowed: newBorrowed, userLastSupplyIndex: newLastSupplyIndex, userLastBorrowIndex: newLastBorrowIndex };
+      tUsdcBorrowed: (ctx: any): [PrivatePosition, bigint] => {
+        return [ctx.privateState, ctx.privateState.tUsdcBorrowed ?? 0n];
+      },
+      setTUsdcPosition: (_ctx: any, supplied: bigint): [PrivatePosition, []] => {
+        const state = { tNightSupplied: _ctx.privateState.tNightSupplied ?? 0n, tNightBorrowed: _ctx.privateState.tNightBorrowed ?? 0n, tUsdcSupplied: supplied, tUsdcBorrowed: _ctx.privateState.tUsdcBorrowed ?? 0n };
+        return [state, []];
+      },
+      setTUsdcBorrowedPosition: (_ctx: any, borrowed: bigint): [PrivatePosition, []] => {
+        const state = { tNightSupplied: _ctx.privateState.tNightSupplied ?? 0n, tNightBorrowed: _ctx.privateState.tNightBorrowed ?? 0n, tUsdcSupplied: _ctx.privateState.tUsdcSupplied ?? 0n, tUsdcBorrowed: borrowed };
         return [state, []];
       },
     });
@@ -75,9 +109,9 @@ async function createProviders(coinPublicKey: string, encryptionPublicKey: strin
 
   return {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'nocturne-lending-state',
+      privateStateStoreName: 'nocturne-lending-multi-private-state',
       accountId,
-      privateStoragePasswordProvider: () => PRIVATE_STATE_PASSWORD,
+      privateStoragePasswordProvider: () => process.env.PRIVATE_STATE_PASSWORD?.trim() || 'Local-Dev-Development-Placeholder-1',
     }),
     zkConfigProvider,
     publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS, WebSocket),
@@ -87,87 +121,93 @@ async function createProviders(coinPublicKey: string, encryptionPublicKey: strin
   };
 }
 
-const VALID_ACTIONS = ['deposit', 'withdraw', 'borrow', 'repay'] as const;
+const VALID_ASSETS = ['tNight', 'tUSDC'] as const;
+const VALID_ACTIONS = ['supply', 'withdraw', 'borrow', 'repay', 'supply_tusdc', 'withdraw_tusdc', 'borrow_tusdc', 'repay_tusdc'] as const;
+
+type Asset = typeof VALID_ASSETS[number];
 type Action = typeof VALID_ACTIONS[number];
-type UserPosition = ReturnType<typeof newUserPosition>;
 
-// A proof must not update private state until Lace has balanced and submitted
-// it. This in-memory hand-off intentionally expires; a failed/cancelled wallet
-// prompt therefore leaves the previous position intact.
-const pendingPrivateStates = new Map<string, { accountId: string; contractAddress: string; state: UserPosition; expiresAt: number }>();
-const PENDING_STATE_TTL_MS = 30 * 60 * 1000;
+const ACTION_TO_CIRCUIT: Record<string, Record<Asset, string>> = {
+  supply: { tNight: 'supply', tUSDC: 'supply_tusdc' },
+  withdraw: { tNight: 'withdraw', tUSDC: 'withdraw_tusdc' },
+  borrow: { tNight: 'borrow', tUSDC: 'borrow_tusdc' },
+  repay: { tNight: 'repay', tUSDC: 'repay_tusdc' },
+};
 
-const TNIGHT_SCALE = 1_000_000n;
-
-function parseAmount(raw: string): bigint {
-  const trimmed = raw.trim();
-  if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) {
-    throw new Error('Amount must be a tNight amount with up to 6 decimals');
-  }
-  const [whole, fraction = ''] = trimmed.split('.');
-  return BigInt(whole) * TNIGHT_SCALE + BigInt(fraction.padEnd(6, '0') || '0');
-}
-
-function isUserPosition(value: unknown): value is UserPosition {
+function isPrivatePosition(value: unknown): value is PrivatePosition {
   if (!value || typeof value !== 'object') return false;
   const state = value as Record<string, unknown>;
-  return ['userSupplied', 'userBorrowed', 'userLastSupplyIndex', 'userLastBorrowIndex']
+  return ['tNightSupplied', 'tNightBorrowed', 'tUsdcSupplied', 'tUsdcBorrowed']
     .every((key) => typeof state[key] === 'bigint');
 }
 
-async function handleProveRequest(providers: any, action: Action, amountStr: string, accountId: string, unshieldedAddress: string): Promise<{ success: true; provenTx: string; pendingId: string } | { error: string }> {
+function getInitialPosition(): PrivatePosition {
+  return { tNightSupplied: 0n, tNightBorrowed: 0n, tUsdcSupplied: 0n, tUsdcBorrowed: 0n };
+}
+
+async function handleProveRequest(providers: any, action: Action, asset: Asset, amountStr: string, accountId: string, unshieldedAddress: string): Promise<{ success: true; provenTx: string; pendingId: string } | { error: string }> {
   try {
-    const amount = parseAmount(amountStr);
+    const trimmed = amountStr.trim();
+    if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) {
+      return { error: 'Amount must be a number with up to 6 decimals' };
+    }
+    const [whole, fraction = ''] = trimmed.split('.');
+    const amount = BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, '0') || '0');
     if (amount <= 0n) {
       return { error: 'Amount must be greater than 0' };
     }
 
-    const deployment = getDeployment(network);
-    if (!deployment) {
+    const contractAddress = getMultiContractAddress(network);
+    if (!contractAddress) {
       return { error: `No deploy on file for network ${network}. Run npm run deploy first.` };
     }
 
-    providers.privateStateProvider.setContractAddress(deployment.address);
-    const savedState = await providers.privateStateProvider.get(PRIVATE_STATE_ID);
-    const position = isUserPosition(savedState) ? savedState : newUserPosition();
-    if (!isUserPosition(savedState)) {
-      await providers.privateStateProvider.set(PRIVATE_STATE_ID, position);
+    providers.privateStateProvider.setContractAddress(contractAddress);
+    const savedState = await providers.privateStateProvider.get('nocturneLendingMultiPrivateState');
+    const position = isPrivatePosition(savedState) ? savedState : getInitialPosition();
+    if (!isPrivatePosition(savedState)) {
+      await providers.privateStateProvider.set('nocturneLendingMultiPrivateState', position);
     }
 
-    const storedBalance = action === 'deposit' || action === 'withdraw'
-      ? position.userSupplied
-      : position.userBorrowed;
-    const lastIndex = action === 'deposit' || action === 'withdraw'
-      ? position.userLastSupplyIndex
-      : position.userLastBorrowIndex;
-    const { quotient, remainder } = rescaleArguments(storedBalance, INITIAL_INDEX, lastIndex);
+    const circuitId = ACTION_TO_CIRCUIT[action]?.[asset];
+    if (!circuitId) {
+      return { error: `Unsupported action/asset combination: ${action}/${asset}` };
+    }
 
     const decodedUnshielded = MidnightBech32m.parse(unshieldedAddress).decode(UnshieldedAddress, network);
     const recipient = { bytes: encodeUserAddress(decodedUnshielded.hexString) };
+
+    let args: unknown[];
+    if (circuitId === 'supply_tusdc') {
+      args = [TUSDC_COLOR, amount];
+    } else if (circuitId === 'withdraw_tusdc') {
+      args = [recipient, TUSDC_COLOR, amount];
+    } else {
+      args = [amount];
+    }
+
     const callOptions = {
       compiledContract: deployedContract as any,
-      contractAddress: deployment.address,
-      privateStateId: PRIVATE_STATE_ID,
-      circuitId: `${action}_native`,
-      args: action === 'withdraw' || action === 'borrow'
-        ? [recipient, amount, quotient, remainder]
-        : [amount, quotient, remainder],
+      contractAddress: contractAddress,
+      privateStateId: 'nocturneLendingMultiPrivateState',
+      circuitId,
+      args,
     };
 
-    console.log(`[${new Date().toISOString()}] Proving ${action} for amount ${amount}`);
+    console.log(`[${new Date().toISOString()}] Proving ${action} ${asset} for amount ${amount}`);
     const unprovenTx = await createUnprovenCallTx(providers, callOptions);
     const provenTx = await providers.proofProvider.proveTx(unprovenTx.private.unprovenTx);
 
     const serialized = provenTx.serialize();
     const txHex = Buffer.from(serialized).toString('hex');
 
-    console.log(`[${new Date().toISOString()}] Prove succeeded for ${action}, tx length: ${txHex.length}`);
+    console.log(`[${new Date().toISOString()}] Prove succeeded for ${action} ${asset}, tx length: ${txHex.length}`);
 
     const pendingId = randomUUID();
     pendingPrivateStates.set(pendingId, {
       accountId,
-      contractAddress: deployment.address,
-      state: unprovenTx.private.nextPrivateState as unknown as UserPosition,
+      contractAddress: contractAddress,
+      state: unprovenTx.private.nextPrivateState as unknown as PrivatePosition,
       expiresAt: Date.now() + PENDING_STATE_TTL_MS,
     });
     return { success: true, provenTx: txHex, pendingId };
@@ -178,6 +218,9 @@ async function handleProveRequest(providers: any, action: Action, amountStr: str
   }
 }
 
+const pendingPrivateStates = new Map<string, { accountId: string; contractAddress: string; state: PrivatePosition; expiresAt: number }>();
+const PENDING_STATE_TTL_MS = 30 * 60 * 1000;
+
 async function main() {
   setNetworkId(network);
 
@@ -185,12 +228,8 @@ async function main() {
   console.log(`║  Nocturne Finance Proof Server (${network})`);
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
-  const deployment = getDeployment(network);
-  if (deployment) {
-    console.log(`  Contract Address: ${deployment.address}\n`);
-  } else {
-    console.log(`  ⚠ No deployment found for network ${network}\n`);
-  }
+  const contractAddress = getMultiContractAddress(network);
+  console.log(`  Contract Address: ${contractAddress}\n`);
 
   const port = parseInt(process.env.INTERACT_SERVER_PORT || '6301', 10);
 
@@ -210,8 +249,139 @@ async function main() {
       res.writeHead(200);
       res.end(JSON.stringify({
         network,
-        contractAddress: deployment?.address ?? null,
+        contractAddress: getMultiContractAddress(network),
       }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url?.startsWith('/api/wallet/balance')) {
+      try {
+        const accountId = new URL(req.url, 'http://localhost').searchParams.get('accountId');
+        if (!accountId || accountId.length > 512) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'A valid accountId is required' }));
+          return;
+        }
+
+        const query = `query GetUnshieldedBalances($address: HexEncoded!) {
+          unshieldedBalances(address: $address) {
+            tokenColor
+            amount
+          }
+        }`;
+
+        const response = await fetch(networkConfig.indexer, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables: { address: accountId } }),
+        });
+
+        const result = await response.json() as { data?: { unshieldedBalances?: Array<{ tokenColor: string; amount: string }> }; errors?: Array<{ message?: string }> };
+        if (result.errors?.length) {
+          throw new Error(result.errors[0]?.message || 'Indexer query failed');
+        }
+
+        const balances = (result.data?.unshieldedBalances ?? []).map((b) => ({
+          tokenColor: b.tokenColor,
+          amount: b.amount,
+        }));
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ balances }));
+      } catch (err: any) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message || 'Could not read wallet balance' }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/claim-tusdc') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const parsed = JSON.parse(body);
+          const { accountId, unshieldedAddress } = parsed;
+
+          if (!accountId || !unshieldedAddress) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'accountId and unshieldedAddress are required' }));
+            return;
+          }
+
+          const tokenStatePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.midnight-token-state.json');
+          if (!fs.existsSync(tokenStatePath)) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Test token not deployed. Run npm run deploy-token first.' }));
+            return;
+          }
+          const tokenState = JSON.parse(fs.readFileSync(tokenStatePath, 'utf8')) as { address: string; faucetAmountBaseUnits: string };
+
+          const zkPath = path.resolve(__dirname, '..', 'contract', 'managed', 'nocturne_test_token');
+          const contractPath = path.join(zkPath, 'contract', 'index.js');
+          if (!fs.existsSync(contractPath)) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: 'Test token artifacts missing. Run npm run compile.' }));
+            return;
+          }
+          const TestToken = await import(pathToFileURL(contractPath).href);
+          const testTokenContract = CompiledContract.make('nocturne-test-token', class extends TestToken.Contract { constructor() { super({}); } } as any)
+            .pipe(CompiledContract.withCompiledFileAssets(zkPath));
+
+          const walletCtx = await createWallet({ network, networkConfig, seed: getOrCreateSeed(network) });
+          await walletCtx.wallet.waitForSyncedState();
+
+          const walletProvider = {
+            getCoinPublicKey: () => walletCtx.shieldedSecretKeys.coinPublicKey,
+            getEncryptionPublicKey: () => walletCtx.shieldedSecretKeys.encryptionPublicKey,
+            async balanceTx(tx: any, ttl?: Date) {
+              const recipe = await walletCtx.wallet.balanceUnboundTransaction(tx, { shieldedSecretKeys: walletCtx.shieldedSecretKeys, dustSecretKey: walletCtx.dustSecretKey }, { ttl: ttl ?? new Date(Date.now() + 30 * 60 * 1000) });
+              return walletCtx.wallet.finalizeRecipe(recipe);
+            },
+            submitTx: (tx: any) => walletCtx.wallet.submitTransaction(tx),
+          };
+
+          const providers = {
+            privateStateProvider: levelPrivateStateProvider({ privateStateStoreName: 'nocturne-test-token-state', accountId, privateStoragePasswordProvider: () => process.env.PRIVATE_STATE_PASSWORD?.trim() || 'Local-Dev-Development-Placeholder-1' }),
+            publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS, WebSocket as any),
+            zkConfigProvider: new NodeZkConfigProvider(zkPath),
+            proofProvider: httpClientProofProvider(networkConfig.proofServer, new NodeZkConfigProvider(zkPath)),
+            walletProvider,
+            midnightProvider: walletProvider,
+          };
+
+          const deployed: any = await findDeployedContract(providers as any, { compiledContract: testTokenContract as any, contractAddress: tokenState.address, privateStateId: 'nocturneTestTokenPrivateState', initialPrivateState: {} });
+          const decoded = MidnightBech32m.parse(unshieldedAddress).decode(UnshieldedAddress, network);
+          const recipient = { bytes: encodeUserAddress(decoded.hexString) };
+
+          let result: any;
+          for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+              result = await deployed.callTx.claim(recipient);
+              break;
+            } catch (error: any) {
+              const message = `${error?.message ?? ''} ${error?.cause?.message ?? ''}`;
+              const transient = /disconnect|timed out|timeout|submission error|submission failed|connection reset|ECONNRESET|ECONNREFUSED/i.test(message);
+              if (!transient || attempt === 5) throw error;
+              const delayMs = attempt * 10_000;
+              console.warn(`  Claim RPC interrupted (attempt ${attempt}/5); retrying in ${delayMs / 1000}s...`);
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+          }
+
+          if (!result) throw new Error('Faucet claim did not complete');
+          console.log(`[${new Date().toISOString()}] tUSDC claimed for ${accountId}: ${result.public.txId}`);
+
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, txId: result.public.txId, amount: tokenState.faucetAmountBaseUnits }));
+        } catch (err: any) {
+          console.error(`[${new Date().toISOString()}] Claim error:`, err?.message || err);
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: err.message || 'Claim failed' }));
+        } finally {
+          // No wallet state to persist for this ephemeral claim flow
+        }
+      });
       return;
     }
 
@@ -223,25 +393,19 @@ async function main() {
           res.end(JSON.stringify({ error: 'A valid accountId is required' }));
           return;
         }
-        const deployment = getDeployment(network);
-        if (!deployment) {
-          res.writeHead(404);
-          res.end(JSON.stringify({ error: `No deploy on file for network ${network}.` }));
-          return;
-        }
-
+        const contractAddress = getMultiContractAddress(network);
         const providers = await createProviders('', '', accountId);
-        providers.privateStateProvider.setContractAddress(deployment.address);
-        const savedState = await providers.privateStateProvider.get(PRIVATE_STATE_ID);
-        const position = isUserPosition(savedState) ? savedState : null;
+        providers.privateStateProvider.setContractAddress(contractAddress);
+        const savedState = await providers.privateStateProvider.get('nocturneLendingMultiPrivateState');
+        const position = isPrivatePosition(savedState) ? savedState : null;
         res.writeHead(200);
         res.end(JSON.stringify({
-          position: position && {
-            userSupplied: position.userSupplied.toString(),
-            userBorrowed: position.userBorrowed.toString(),
-            userLastSupplyIndex: position.userLastSupplyIndex.toString(),
-            userLastBorrowIndex: position.userLastBorrowIndex.toString(),
-          },
+          position: position ? {
+            tNightSupplied: position.tNightSupplied.toString(),
+            tNightBorrowed: position.tNightBorrowed.toString(),
+            tUsdcSupplied: position.tUsdcSupplied.toString(),
+            tUsdcBorrowed: position.tUsdcBorrowed.toString(),
+          } : null,
         }));
       } catch (err: any) {
         res.writeHead(500);
@@ -256,11 +420,17 @@ async function main() {
       req.on('end', async () => {
         try {
           const parsed = JSON.parse(body);
-          const { action, amount, coinPublicKey, encryptionPublicKey, accountId, unshieldedAddress } = parsed;
+          const { action, asset, amount, coinPublicKey, encryptionPublicKey, accountId, unshieldedAddress } = parsed;
 
-          if (!action || !VALID_ACTIONS.includes(action)) {
+          if (!action || !VALID_ACTIONS.includes(action as Action)) {
             res.writeHead(400);
             res.end(JSON.stringify({ error: `Invalid action. Must be one of: ${VALID_ACTIONS.join(', ')}` }));
+            return;
+          }
+
+          if (!asset || !VALID_ASSETS.includes(asset)) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: `Invalid asset. Must be one of: ${VALID_ASSETS.join(', ')}` }));
             return;
           }
 
@@ -277,7 +447,7 @@ async function main() {
           }
 
           const providers = await createProviders(coinPublicKey, encryptionPublicKey, accountId);
-          const result = await handleProveRequest(providers, action as Action, amount, accountId, unshieldedAddress);
+          const result = await handleProveRequest(providers, action as Action, asset, amount, accountId, unshieldedAddress);
 
           if ('error' in result) {
             res.writeHead(500);
@@ -315,7 +485,7 @@ async function main() {
 
           const providers = await createProviders('', '', accountId);
           providers.privateStateProvider.setContractAddress(pending.contractAddress);
-          await providers.privateStateProvider.set(PRIVATE_STATE_ID, pending.state);
+          await providers.privateStateProvider.set('nocturneLendingMultiPrivateState', pending.state);
           pendingPrivateStates.delete(pendingId);
           res.writeHead(200);
           res.end(JSON.stringify({ success: true }));

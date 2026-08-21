@@ -26,6 +26,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <Link href="/app" className="transition hover:text-cyan-200">
                     DASHBOARD
                   </Link>
+                  <Link href="/app/markets" className="transition hover:text-cyan-200">
+                    MARKETS
+                  </Link>
                   <a
                     href="https://github.com/pk1427/nocturne-finance"
                     target="_blank"

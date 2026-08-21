@@ -6,6 +6,7 @@ import type { ConnectedAPI, InitialAPI } from "@midnight-ntwrk/dapp-connector-ap
 type WalletState = {
   isConnected: boolean;
   address: string | null;
+  unshieldedAddress: string | null;
   networkId: string | null;
   error: string | null;
 };
@@ -21,6 +22,7 @@ type WalletContextValue = {
   dustBalance: bigint;
   dustSymbol: string;
   refreshBalances: () => Promise<void>;
+  unshieldedAddress: string | null;
 };
 
 const WalletContext = createContext<WalletContextValue | null>(null);
@@ -51,7 +53,7 @@ function userFacingError(error: unknown): string {
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<WalletState>({ isConnected: false, address: null, networkId: null, error: null });
+  const [state, setState] = useState<WalletState>({ isConnected: false, address: null, unshieldedAddress: null, networkId: null, error: null });
   const [api, setApi] = useState<ConnectedAPI | null>(null);
   const [dustBalance, setDustBalance] = useState(0n);
 
@@ -76,15 +78,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const connection = await connectedApi.getConnectionStatus();
       if (connection.status !== "connected") throw new Error("Wallet connection lost. Please try again.");
 
+      const { unshieldedAddress } = await connectedApi.getUnshieldedAddress();
+
       setApi(connectedApi);
       setDustBalance(dust.balance);
       setState({
         isConnected: true,
         address: addresses.shieldedAddress,
+        unshieldedAddress,
         networkId: configuration.networkId,
         error: EXPECTED_NETWORKS.has(configuration.networkId) ? null : `Please switch to a supported Midnight network (current: ${configuration.networkId})`,
       });
-      window.focus();
+      setTimeout(() => {
+        try { window.focus(); } catch { /* noop */ }
+        try { document.body.click(); } catch { /* noop */ }
+      }, 150);
+      setTimeout(() => {
+        try { window.focus(); } catch { /* noop */ }
+      }, 600);
     } catch (error) {
       setState((current) => ({ ...current, error: userFacingError(error) }));
     }
@@ -93,7 +104,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     setApi(null);
     setDustBalance(0n);
-    setState({ isConnected: false, address: null, networkId: null, error: null });
+    setState({ isConnected: false, address: null, unshieldedAddress: null, networkId: null, error: null });
   }, []);
 
   const signAndSubmit = useCallback(async (tx: unknown): Promise<void> => {
@@ -133,6 +144,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       dustBalance,
       dustSymbol: "tDUST",
       refreshBalances,
+      unshieldedAddress: state.unshieldedAddress,
     }}>
       {children}
     </WalletContext.Provider>

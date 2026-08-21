@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type PrivatePosition = {
-  userSupplied: bigint;
-  userBorrowed: bigint;
-  userLastSupplyIndex: bigint;
-  userLastBorrowIndex: bigint;
+  tNightSupplied: bigint;
+  tNightBorrowed: bigint;
+  tUsdcSupplied: bigint;
+  tUsdcBorrowed: bigint;
 };
 
 export function usePrivatePosition(accountId: string | null) {
@@ -28,10 +28,10 @@ export function usePrivatePosition(accountId: string | null) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not load private position");
       setPosition(data.position ? {
-        userSupplied: BigInt(data.position.userSupplied),
-        userBorrowed: BigInt(data.position.userBorrowed),
-        userLastSupplyIndex: BigInt(data.position.userLastSupplyIndex),
-        userLastBorrowIndex: BigInt(data.position.userLastBorrowIndex),
+        tNightSupplied: BigInt(data.position.tNightSupplied),
+        tNightBorrowed: BigInt(data.position.tNightBorrowed),
+        tUsdcSupplied: BigInt(data.position.tUsdcSupplied),
+        tUsdcBorrowed: BigInt(data.position.tUsdcBorrowed),
       } : null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not load private position");

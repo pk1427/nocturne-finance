@@ -1,0 +1,59 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// Architecture-only multi-asset model. This module is deliberately not wired
+// into the deployed native reserve yet; it defines the identity and accounting
+// boundaries used by the next lending-contract revision.
+struct AssetReserve {
+  totalSupplied: Uint<128>,
+  totalBorrowed: Uint<128>,
+  supplyIndex: Uint<128>,
+  borrowIndex: Uint<128>,
+  collateralFactor: Uint<128>,
+  liquidationThreshold: Uint<128>,
+}
+
+// Midnight native tNight is represented by the all-zero token color.
+export pure circuit is_native_tnight(color: Bytes<32>): Boolean {
+  return color == pad(32, "");
+}
+
+// This is the deployed Nocturne tUSDC color (Preview deployment).
+export pure circuit is_deployed_tusdc(color: Bytes<32>, deployedColor: Bytes<32>): Boolean {
+  return color == deployedColor;
+}
+
+export pure circuit is_supported_asset(color: Bytes<32>, deployedColor: Bytes<32>): Boolean {
+  return is_native_tnight(color) || is_deployed_tusdc(color, deployedColor);
+}
+
+export pure circuit validate_asset(color: Bytes<32>, deployedColor: Bytes<32>): [] {
+  assert(is_supported_asset(color, deployedColor), "unknown asset token color");
+}
+
+// Accounting operations are pure and asset-local. The production contract
+// revision will store one instance per token color and invoke these helpers.
+export pure circuit add_supply(reserve: AssetReserve, amount: Uint<128>): AssetReserve {
+  assert(amount > 0, "amount must be greater than zero");
+  return AssetReserve {
+    totalSupplied: (reserve.totalSupplied + amount) as Uint<128>,
+    totalBorrowed: reserve.totalBorrowed,
+    supplyIndex: reserve.supplyIndex,
+    borrowIndex: reserve.borrowIndex,
+    collateralFactor: reserve.collateralFactor,
+    liquidationThreshold: reserve.liquidationThreshold,
+  };
+}
+
+export pure circuit add_borrow(reserve: AssetReserve, amount: Uint<128>): AssetReserve {
+  assert(amount > 0, "amount must be greater than zero");
+  return AssetReserve {
+    totalSupplied: reserve.totalSupplied,
+    totalBorrowed: (reserve.totalBorrowed + amount) as Uint<128>,
+    supplyIndex: reserve.supplyIndex,
+    borrowIndex: reserve.borrowIndex,
+    collateralFactor: reserve.collateralFactor,
+    liquidationThreshold: reserve.liquidationThreshold,
+  };
+}

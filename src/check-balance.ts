@@ -5,6 +5,9 @@ import { WebSocket } from 'ws';
 import { resolveNetwork, getOrCreateSeed } from './network';
 // unshieldedToken is re-exported from ./wallet (originally @midnight-ntwrk/midnight-js-protocol/ledger).
 import { createWallet, persistWalletState, unshieldedToken } from './wallet';
+import { findCustomTokenBalance, formatTokenUnits } from './token-balance.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
@@ -52,6 +55,9 @@ async function main() {
 
     const address = walletCtx.unshieldedKeystore.getBech32Address();
     const tNightBalance = state.unshielded.balances[unshieldedToken().raw] ?? 0n;
+    const tokenStatePath = path.resolve(process.cwd(), '.midnight-token-state.json');
+    const tokenState = fs.existsSync(tokenStatePath) ? JSON.parse(fs.readFileSync(tokenStatePath, 'utf8')) as { tokenColor?: string } : {};
+    const tokenBalance = findCustomTokenBalance(state.unshielded.balances, unshieldedToken().raw, tokenState.tokenColor);
     const now = new Date();
     const dustState = state.dust;
     const dustBalance = dustState.balance(now);
@@ -72,6 +78,11 @@ async function main() {
     console.log('─── Balances ───────────────────────────────────────────────────\n');
     console.log(`  tNight: ${tNightBalance.toLocaleString()} raw (${formatUnits(tNightBalance, NIGHT_UNIT, 6)} tNight)`);
     console.log(`  DUST:   ${dustBalance.toLocaleString()} raw (${formatUnits(dustBalance, DUST_UNIT, 15)} DUST)\n`);
+    console.log('─── Custom Token Balance ──────────────────────────────────────\n');
+    console.log('  Token: tUSDC');
+    console.log(`  Token color: ${tokenBalance.tokenColor}`);
+    console.log(`  Raw balance: ${tokenBalance.raw.toLocaleString()}`);
+    console.log(`  Balance: ${formatTokenUnits(tokenBalance.raw)} tUSDC\n`);
     console.log('─── DUST Generation Status ────────────────────────────────────\n');
     console.log(`  Available tNight UTXOs:    ${availableCoins.length}`);
     console.log(`  Registered for generation: ${registeredCoins.length}`);

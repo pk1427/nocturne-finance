@@ -3,6 +3,8 @@
 import { useState, useCallback } from "react";
 import { useLaceWallet } from "@/hooks/useLaceWallet";
 
+type Asset = "tNight" | "tUSDC";
+
 type ActionState = {
   loading: boolean;
   error: string | null;
@@ -17,7 +19,7 @@ const INITIAL_STATE: ActionState = {
   accountId: null,
 };
 
-export function useContractActions(accountId: string | null, onSuccess?: () => void) {
+export function useContractActions(accountId: string | null, asset: Asset, onSuccess?: () => void) {
   const [depositState, setDepositState] = useState<ActionState>(INITIAL_STATE);
   const [withdrawState, setWithdrawState] = useState<ActionState>(INITIAL_STATE);
   const [borrowState, setBorrowState] = useState<ActionState>(INITIAL_STATE);
@@ -53,6 +55,7 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action,
+          asset,
           amount,
           coinPublicKey: shieldedAddresses.shieldedCoinPublicKey,
           encryptionPublicKey: shieldedAddresses.shieldedEncryptionPublicKey,
@@ -71,9 +74,6 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
 
       await signAndSubmit(provenTx);
 
-      // The proof service keeps the next private state pending until Lace has
-      // reported a successful submission. This keeps cancelled wallet prompts
-      // from advancing a user's confidential position.
       const commitResponse = await fetch("/api/contract/prove", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -81,9 +81,6 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
           commit: true,
           pendingId,
           accountId: shieldedAddresses.shieldedAddress,
-          // Connector API v4 returns no transaction identifier on submit.
-          // This acknowledgement is only used to release the server's pending
-          // witness state; it is deliberately not presented as a hash.
           txHash: "lace-submitted",
         }),
       });
@@ -113,13 +110,13 @@ export function useContractActions(accountId: string | null, onSuccess?: () => v
       });
       throw err;
     }
-  }, [accountId, onSuccess, signAndSubmit, isConnected, api, version]);
+  }, [accountId, asset, onSuccess, signAndSubmit, isConnected, api, version]);
 
   const stateForConnectedAccount = (state: ActionState): ActionState =>
     state.accountId === accountId ? state : INITIAL_STATE;
 
   return {
-    deposit: (amount: string) => executeAction("deposit", amount),
+    deposit: (amount: string) => executeAction("supply", amount),
     withdraw: (amount: string) => executeAction("withdraw", amount),
     borrow: (amount: string) => executeAction("borrow", amount),
     repay: (amount: string) => executeAction("repay", amount),

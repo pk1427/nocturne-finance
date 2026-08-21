@@ -2,12 +2,18 @@
 
 import { useEffect, useState, useCallback } from "react";
 
+type ReserveState = {
+  enabled: boolean;
+  tokenColor: string;
+  totalSupplied: bigint;
+  totalBorrowed: bigint;
+  supplyIndex: bigint;
+  borrowIndex: bigint;
+};
+
 type ContractState = {
-  totalSupplied: bigint | null;
-  totalBorrowed: bigint | null;
-  supplyIndex: bigint | null;
-  borrowIndex: bigint | null;
-  lastAccrualTimestamp: bigint | null;
+  tNight: ReserveState;
+  tUsdc: ReserveState;
   loading: boolean;
   error: string | null;
 };
@@ -34,13 +40,21 @@ function hexToBytes(value: string): Uint8Array {
   return Uint8Array.from({ length: hex.length / 2 }, (_, index) => Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16));
 }
 
+function serializeReserveState(state: Record<string, unknown>): ReserveState {
+  return {
+    enabled: state.enabled as boolean,
+    tokenColor: Array.from(new Uint8Array(state.tokenColor as unknown as ArrayLike<number>)).map(b => b.toString(16).padStart(2, '0')).join(''),
+    totalSupplied: state.totalSupplied as bigint,
+    totalBorrowed: state.totalBorrowed as bigint,
+    supplyIndex: state.supplyIndex as bigint,
+    borrowIndex: state.borrowIndex as bigint,
+  };
+}
+
 export function useContractState() {
   const [state, setState] = useState<ContractState>({
-    totalSupplied: null,
-    totalBorrowed: null,
-    supplyIndex: null,
-    borrowIndex: null,
-    lastAccrualTimestamp: null,
+    tNight: { enabled: false, tokenColor: '', totalSupplied: 0n, totalBorrowed: 0n, supplyIndex: 0n, borrowIndex: 0n },
+    tUsdc: { enabled: false, tokenColor: '', totalSupplied: 0n, totalBorrowed: 0n, supplyIndex: 0n, borrowIndex: 0n },
     loading: false,
     error: null,
   });
@@ -83,22 +97,16 @@ export function useContractState() {
       }
 
       try {
-        // Compact's StateValue encoding is not a positional array of ledger
-        // cells. Decode it through the generated contract, so additions to
-        // the ledger layout cannot silently shift the displayed values.
-        const [{ ContractState: CompactContractState }, NocturneLending] = await Promise.all([
+        const [{ ContractState: CompactContractState }, NocturneLendingMulti] = await Promise.all([
           import("@midnight-ntwrk/compact-runtime"),
-          import("@/lib/contracts/nocturne_lending/contract/index.js"),
+          import("@/lib/contracts/nocturne_lending_multi/contract/index.js"),
         ]);
         const contractState = CompactContractState.deserialize(hexToBytes(publicState));
-        const ledger = NocturneLending.ledger(contractState.data);
+        const ledger = NocturneLendingMulti.ledger(contractState.data);
 
         setState({
-          totalSupplied: ledger.totalSupplied,
-          totalBorrowed: ledger.totalBorrowed,
-          supplyIndex: ledger.supplyIndex,
-          borrowIndex: ledger.borrowIndex,
-          lastAccrualTimestamp: ledger.lastAccrualTimestamp,
+          tNight: serializeReserveState(ledger.tNightReserve as unknown as Record<string, unknown>),
+          tUsdc: serializeReserveState(ledger.tUsdcReserve as unknown as Record<string, unknown>),
           loading: false,
           error: null,
         });
